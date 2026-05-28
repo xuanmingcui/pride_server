@@ -138,6 +138,7 @@ class SceneGraphPipeline:
         num_frames: Optional[int] = None,
         mode: str = "high",
         prompt_override: Optional[str] = None,
+        raw_output: bool = False,
     ) -> Dict[str, Any]:
         """Generate scene graph from any combination of media + text.
 
@@ -164,11 +165,11 @@ class SceneGraphPipeline:
                  media_name, len(text), output_type, n_frames, mode)
 
         if media_path is None:
-            result = self._text_only(text, temperature, mode, prompt_override)
+            result = self._text_only(text, temperature, mode, prompt_override, raw_output)
         elif self._is_image(media_path):
-            result = self._image(media_path, text, temperature, mode, prompt_override)
+            result = self._image(media_path, text, temperature, mode, prompt_override, raw_output)
         else:
-            result = self._video(media_path, text, temperature, n_frames, mode, prompt_override)
+            result = self._video(media_path, text, temperature, n_frames, mode, prompt_override, raw_output)
 
         if output_type == "overlay" and output_path and media_path:
             log.info("Rendering overlay → %s …", os.path.basename(output_path))
@@ -192,29 +193,37 @@ class SceneGraphPipeline:
     # ------------------------------------------------------------------
 
     def _text_only(self, text: str, temperature: Optional[float], mode: str,
-                   prompt_override: Optional[str] = None) -> Dict[str, Any]:
+                   prompt_override: Optional[str] = None, raw_output: bool = False) -> Dict[str, Any]:
         log.info("Mode: text-only. Running MLLM …")
         prompt = build_text_only_scenegraph_prompt(text, mode=mode, template_override=prompt_override)
-        trips = self._run_batch([{"prompt": prompt, "frames": None, "fps": None}],
-                                temperature, mode)[0]
+        req = [{"prompt": prompt, "frames": None, "fps": None}]
+        if raw_output:
+            raw_text = self._run_batch_raw(req, temperature)[0]
+            log.info("Text-only raw done (%d chars).", len(raw_text))
+            return {"triplets": [], "segments": [], "transcript": text, "raw_text": raw_text}
+        trips = self._run_batch(req, temperature, mode)[0]
         log.info("Text-only done: %d triplet(s).", len(trips))
         return {"triplets": trips, "segments": [], "transcript": text}
 
     def _image(
         self, image_path: str, text: str, temperature: Optional[float], mode: str,
-        prompt_override: Optional[str] = None,
+        prompt_override: Optional[str] = None, raw_output: bool = False,
     ) -> Dict[str, Any]:
         log.info("Mode: image. Running MLLM …")
         img = Image.open(image_path).convert("RGB")
         prompt = build_scenegraph_prompt("", mode=mode, user_text=text, template_override=prompt_override)
-        trips = self._run_batch([{"prompt": prompt, "frames": [img], "fps": None}],
-                                temperature, mode)[0]
+        req = [{"prompt": prompt, "frames": [img], "fps": None}]
+        if raw_output:
+            raw_text = self._run_batch_raw(req, temperature)[0]
+            log.info("Image raw done (%d chars).", len(raw_text))
+            return {"triplets": [], "segments": [], "transcript": text, "raw_text": raw_text}
+        trips = self._run_batch(req, temperature, mode)[0]
         log.info("Image done: %d triplet(s).", len(trips))
         return {"triplets": trips, "segments": [], "transcript": text}
 
     def _video(
         self, video_path: str, text: str, temperature: Optional[float], num_frames: int, mode: str,
-        prompt_override: Optional[str] = None,
+        prompt_override: Optional[str] = None, raw_output: bool = False,
     ) -> Dict[str, Any]:
         duration = _video_duration(video_path)
         log.info("Video: %.1fs duration, user text: %d chars.", duration, len(text))
@@ -234,11 +243,11 @@ class SceneGraphPipeline:
         if asr_segments:
             return self._video_by_segments(
                 video_path, asr_segments, transcript_text, user_text, temperature, num_frames, mode,
-                prompt_override,
+                prompt_override, raw_output,
             )
         log.info("No ASR segments → processing video as a single whole clip.")
         return self._video_whole(video_path, transcript_text, user_text, temperature, num_frames, mode,
-                                 prompt_override)
+                                 prompt_override, raw_output)
 
     # ------------------------------------------------------------------
     # Adaptive temporal segmentation (no-ASR path)
@@ -271,7 +280,7 @@ class SceneGraphPipeline:
     def _video_whole(
         self, video_path: str, transcript_text: str, user_text: str,
         temperature: Optional[float], num_frames: int, mode: str,
-        prompt_override: Optional[str] = None,
+        prompt_override: Optional[str] = None, raw_output: bool = False,
     ) -> Dict[str, Any]:
         duration = _video_duration(video_path)
         max_seg_dur = self._max_segment_duration(num_frames)
@@ -283,7 +292,7 @@ class SceneGraphPipeline:
             )
             return self._video_temporal(
                 video_path, duration, transcript_text, user_text, temperature, num_frames, max_seg_dur, mode,
-                prompt_override,
+                prompt_override, raw_output,
             )
 
         log.info("Mode: video (whole). Sampling %d frames …", num_frames)
@@ -294,8 +303,15 @@ class SceneGraphPipeline:
         log.info("Frames sampled (fps=%.2f, duration=%.1fs). Running MLLM …", fps, duration)
         prompt = build_scenegraph_prompt(transcript_text, mode=mode, user_text=user_text,
                                          template_override=prompt_override)
-        trips = self._run_batch([{"prompt": prompt, "frames": frames, "fps": fps}],
-                                temperature, mode)[0]
+        req = [{"prompt": prompt, "frames": frames, "fps": fps}]
+        if raw_output:
+            raw_text = self._run_batch_raw(req, temperature)[0]
+            log.info("Video (whole) raw done (%d chars).", len(raw_text))
+            return {
+                "triplets": [], "transcript": transcript_text,
+                "segments": [{"start": 0.0, "end": duration, "triplets": [], "raw_text": raw_text}],
+            }
+        trips = self._run_batch(req, temperature, mode)[0]
         log.info("Video (whole) done: %d triplet(s).", len(trips))
         return {
             "triplets": trips,
@@ -314,6 +330,7 @@ class SceneGraphPipeline:
         seg_duration: float,
         mode: str,
         prompt_override: Optional[str] = None,
+        raw_output: bool = False,
     ) -> Dict[str, Any]:
         """Process a long video without ASR by splitting into equal temporal segments."""
         boundaries: List[tuple] = []
@@ -345,9 +362,18 @@ class SceneGraphPipeline:
             return {"triplets": [], "quintuples": [], "segments": [], "transcript": transcript_text}
 
         log.info("Running MLLM batch: %d temporal segment(s) …", len(requests))
-        batch_results = self._run_batch(requests, temperature, mode)
+        if raw_output:
+            raw_texts = self._run_batch_raw(requests, temperature)
+            out_segments = []
+            for meta, raw_text in zip(seg_meta, raw_texts):
+                meta["triplets"] = []
+                meta["raw_text"] = raw_text
+                out_segments.append(meta)
+            log.info("Temporal segmentation raw done: %d segment(s).", len(out_segments))
+            return {"triplets": [], "segments": out_segments, "transcript": transcript_text}
 
-        out_segments: List[Dict] = []
+        batch_results = self._run_batch(requests, temperature, mode)
+        out_segments = []
         all_trips: List[Triplet] = []
         for meta, trips in zip(seg_meta, batch_results):
             meta["triplets"] = trips
@@ -359,11 +385,7 @@ class SceneGraphPipeline:
             "Temporal segmentation done: %d segment(s), %d triplet(s).",
             len(out_segments), len(validated),
         )
-        return {
-            "triplets":   validated,
-            "segments":   out_segments,
-            "transcript": transcript_text,
-        }
+        return {"triplets": validated, "segments": out_segments, "transcript": transcript_text}
 
     def _video_by_segments(
         self,
@@ -375,6 +397,7 @@ class SceneGraphPipeline:
         num_frames: int,
         mode: str,
         prompt_override: Optional[str] = None,
+        raw_output: bool = False,
     ) -> Dict[str, Any]:
         """Build one request per ASR segment, submit ALL in a single batch call."""
         requests: List[Dict] = []
@@ -399,9 +422,18 @@ class SceneGraphPipeline:
             return {"triplets": [], "segments": [], "transcript": transcript_text}
 
         log.info("Running MLLM batch: %d request(s) …", len(requests))
-        batch_results = self._run_batch(requests, temperature, mode)
+        if raw_output:
+            raw_texts = self._run_batch_raw(requests, temperature)
+            out_segments = []
+            for meta, raw_text in zip(seg_meta, raw_texts):
+                meta["triplets"] = []
+                meta["raw_text"] = raw_text
+                out_segments.append(meta)
+            log.info("Video by segments raw done: %d segment(s).", len(out_segments))
+            return {"triplets": [], "segments": out_segments, "transcript": transcript_text}
 
-        out_segments: List[Dict] = []
+        batch_results = self._run_batch(requests, temperature, mode)
+        out_segments = []
         all_trips: List[Triplet] = []
         for meta, trips in zip(seg_meta, batch_results):
             meta["triplets"] = trips
@@ -411,11 +443,7 @@ class SceneGraphPipeline:
         validated = validate_triplets(all_trips)
         log.info("Video by segments done: %d segment(s), %d total triplet(s).",
                  len(out_segments), len(validated))
-        return {
-            "triplets": validated,
-            "segments": out_segments,
-            "transcript": transcript_text,
-        }
+        return {"triplets": validated, "segments": out_segments, "transcript": transcript_text}
 
     # ------------------------------------------------------------------
     # Inference helpers
@@ -439,6 +467,21 @@ class SceneGraphPipeline:
             log.info("Running normalization pass on %d result(s) …", len(results))
             results = self._normalize_batch(results)
             log.info("Normalization done.")
+        return results
+
+    def _run_batch_raw(
+        self, requests: List[Dict], temperature: Optional[float]
+    ) -> List[str]:
+        """Run batched inference and return raw model text (no parsing)."""
+        if temperature is not None:
+            old_temp = getattr(self.backend, "temperature", None)
+            if old_temp is not None:
+                self.backend.temperature = temperature
+            results = self.backend.generate_batch_raw(requests)
+            if old_temp is not None:
+                self.backend.temperature = old_temp
+        else:
+            results = self.backend.generate_batch_raw(requests)
         return results
 
     def _normalize_batch(self, all_trips: List[List[Triplet]]) -> List[List[Triplet]]:

@@ -18,6 +18,24 @@ function fmt(secs) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+function copyToClipboard(text) {
+  const execFallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:absolute;left:-9999px;top:0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (_) {}
+    document.body.removeChild(ta);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text).catch(() => { execFallback(); });
+  }
+  execFallback();
+  return Promise.resolve();
+}
+
 function setStatus(idPrefix, msg, type = '') {
   const box = $(`#${idPrefix}-status`);
   const txt = $(`#${idPrefix}-status-text`);
@@ -125,10 +143,12 @@ $('#sg-submit').addEventListener('click', async () => {
       }
     }
 
+    const outputType = $('#sg-output-type').value;
     const fd = new FormData();
     if (file) fd.append('file', file);
     if (text) fd.append('text', text);
-    fd.append('output_type', $('#sg-output-type').value);
+    fd.append('output_type', outputType === 'raw' ? 'json' : outputType);
+    fd.append('raw_output', outputType === 'raw' ? 'true' : 'false');
     fd.append('mode', document.querySelector('input[name="sg-mode"]:checked').value);
     const frames = $('#sg-frames').value;
     if (frames) fd.append('num_frames', frames);
@@ -153,8 +173,9 @@ $('#sg-submit').addEventListener('click', async () => {
 
 function renderSceneGraph(result, taskId) {
   const segments   = result.segments || [];
-  const isTemporal = result.is_temporal !== false;  // default true for backwards compat
-  const total      = segments.reduce((n, s) => n + s.triplets.length, 0);
+  const isTemporal = result.is_temporal !== false;
+  const isRaw      = result.raw_output === true;
+  const total      = isRaw ? segments.length : segments.reduce((n, s) => n + s.triplets.length, 0);
   const hasOverlay = result.overlay_path;
 
   const container = $('#sg-result');
@@ -163,7 +184,12 @@ function renderSceneGraph(result, taskId) {
   // Summary chips
   const chips = document.createElement('div');
   chips.className = 'chips';
-  if (isTemporal) {
+  if (isRaw) {
+    const segWord = `${segments.length} segment${segments.length !== 1 ? 's' : ''}`;
+    chips.innerHTML =
+      `<span class="chip">${isTemporal ? segWord : 'image / text'}</span>` +
+      `<span class="chip">raw text</span>`;
+  } else if (isTemporal) {
     chips.innerHTML =
       `<span class="chip"><strong>${segments.length}</strong> segment${segments.length !== 1 ? 's' : ''}</span>` +
       `<span class="chip"><strong>${total}</strong> triplet${total !== 1 ? 's' : ''}</span>`;
@@ -222,7 +248,12 @@ function renderSceneGraph(result, taskId) {
     const body = document.createElement('div');
     body.className = 'segment-body';
 
-    if (seg.triplets.length === 0) {
+    if (isRaw && seg.raw_text != null) {
+      const pre = document.createElement('pre');
+      pre.className = 'raw-text-output';
+      pre.textContent = seg.raw_text;
+      body.appendChild(pre);
+    } else if (seg.triplets.length === 0) {
       body.innerHTML = '<span style="color:var(--text-dim);font-size:.8rem">No triplets extracted.</span>';
     } else {
       seg.triplets.forEach(t => {
@@ -244,15 +275,24 @@ function renderSceneGraph(result, taskId) {
     container.innerHTML = '<div class="empty"><p>No triplets extracted.</p></div>';
   }
 
-  // JSON copy button
+  // Copy button
   const copyBtn = $('#sg-copy-btn');
   copyBtn.style.display = '';
-  copyBtn.onclick = () => {
-    const json = isTemporal
-      ? JSON.stringify({ segments }, null, 2)
-      : JSON.stringify({ triplets: segments[0]?.triplets || [] }, null, 2);
-    navigator.clipboard.writeText(json).then(() => toast('JSON copied!', 'success'));
-  };
+  if (isRaw) {
+    copyBtn.textContent = 'Copy text';
+    copyBtn.onclick = () => {
+      const text = segments.map(s => s.raw_text || '').join('\n\n---\n\n');
+      copyToClipboard(text).then(() => toast('Text copied!', 'success'));
+    };
+  } else {
+    copyBtn.textContent = 'Copy JSON';
+    copyBtn.onclick = () => {
+      const json = isTemporal
+        ? JSON.stringify({ segments: segments.map(s => ({start: s.start, end: s.end, triplets: s.triplets})) }, null, 2)
+        : JSON.stringify({ triplets: segments[0]?.triplets || [] }, null, 2);
+      copyToClipboard(json).then(() => toast('JSON copied!', 'success'));
+    };
+  }
 }
 
 function esc(s) {

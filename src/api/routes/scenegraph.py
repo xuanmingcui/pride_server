@@ -35,6 +35,7 @@ async def start_scenegraph(
     num_frames: Optional[int] = Form(None),
     mode: str = Form("high"),
     prompt_override: Optional[str] = Form(None),
+    raw_output: bool = Form(False),
 ):
     """Submit a scene-graph task; returns {task_id} for polling."""
     services = _svc(request)
@@ -80,38 +81,42 @@ async def start_scenegraph(
                 num_frames=num_frames,
                 mode=_mode,
                 prompt_override=_prompt_override,
+                raw_output=raw_output,
             )
             raw_segs = raw.get("segments", [])
             is_temporal = bool(raw_segs)
 
+            def _fmt_seg(seg):
+                out = {
+                    "start":    seg.get("start"),
+                    "end":      seg.get("end"),
+                    "triplets": [
+                        {"subject": t[0], "relation": t[1], "object": t[2]}
+                        for t in seg.get("triplets", [])
+                    ],
+                }
+                if "raw_text" in seg:
+                    out["raw_text"] = seg["raw_text"]
+                return out
+
             if is_temporal:
-                segments_out = [
-                    {
-                        "start": seg["start"],
-                        "end":   seg["end"],
-                        "triplets": [
-                            {"subject": t[0], "relation": t[1], "object": t[2]}
-                            for t in seg.get("triplets", [])
-                        ],
-                    }
-                    for seg in raw_segs
-                ]
+                segments_out = [_fmt_seg(seg) for seg in raw_segs]
             else:
-                # Image or text-only: flat triplets, no temporal axis
                 flat = raw.get("triplets", [])
-                segments_out = [
-                    {
-                        "start": None,
-                        "end":   None,
-                        "triplets": [
-                            {"subject": t[0], "relation": t[1], "object": t[2]}
-                            for t in flat
-                        ],
-                    }
-                ] if flat else []
+                base = {
+                    "start": None, "end": None,
+                    "triplets": [
+                        {"subject": t[0], "relation": t[1], "object": t[2]}
+                        for t in flat
+                    ],
+                }
+                if "raw_text" in raw:
+                    base["raw_text"] = raw["raw_text"]
+                segments_out = [base] if (flat or "raw_text" in raw) else []
 
             return {
                 "is_temporal":  is_temporal,
+                "raw_output":   raw_output,
                 "segments":     segments_out,
                 "overlay_path": raw.get("overlay_path"),
                 "overlay_error": raw.get("overlay_error"),

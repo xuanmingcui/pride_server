@@ -30,6 +30,17 @@ class BaseMLLM:
     def generate_batch(self, requests: List[Dict[str, Any]]) -> List[List[Triplet]]:
         raise NotImplementedError
 
+    def generate_batch_raw(self, requests: List[Dict[str, Any]]) -> List[str]:
+        """Batched generation returning raw model text (no triplet parsing).
+
+        Default falls back to sequential generate_raw calls.
+        Subclasses may override for true batching.
+        """
+        return [
+            self.generate_raw(r["prompt"], r.get("frames"), r.get("fps"))
+            for r in requests
+        ]
+
     def generate_text(self, prompt: str) -> str:
         """Text-only generation for normalization prompts."""
         raise NotImplementedError
@@ -137,6 +148,20 @@ class VLLMBackend(BaseMLLM):
             trips = extract_triplets_from_text(text)
             results.append(validate_triplets(trips))
         return results
+
+    def generate_batch_raw(self, requests: List[Dict[str, Any]]) -> List[str]:
+        if not requests:
+            return []
+        sampling = self.SamplingParams(
+            max_tokens=self.max_new_tokens,
+            temperature=self.temperature,
+        )
+        vllm_reqs = [
+            self._build_request(r["prompt"], r.get("frames"), r.get("fps"))
+            for r in requests
+        ]
+        outputs = self.llm.generate(vllm_reqs, sampling_params=sampling)
+        return [out.outputs[0].text for out in outputs]
 
     def generate_text(self, prompt: str) -> str:
         sampling = self.SamplingParams(max_tokens=512, temperature=0.0)
