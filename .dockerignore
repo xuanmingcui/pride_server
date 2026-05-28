@@ -1,0 +1,17 @@
+# Secrets — never bake credentials into the image
+.env
+
+# Python bytecode
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Runtime / generated data — mount these as volumes instead
+data/db/
+output/
+tmp/
+
+# Large media files that may be sitting in the repo
+*.mp4
+*.wav
+*.mp3

@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PRIDE — Multimodal Analysis</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <div class="logo">PRIDE <span>Multimodal Analysis</span></div>
+  <nav>
+    <button class="tab-btn active" data-tab="scenegraph">Scene Graph</button>
+    <button class="tab-btn" data-tab="validate">Validate</button>
+    <button class="tab-btn" data-tab="databases">Databases</button>
+  </nav>
+</header>
+
+<main>
+
+  <!-- ── Scene Graph tab ────────────────────────────────────────── -->
+  <section id="tab-scenegraph" class="tab-pane active">
+    <div class="split">
+
+      <!-- Input panel -->
+      <div class="card">
+        <div class="card-title">Input</div>
+
+        <div class="upload-zone" id="sg-upload-zone">
+          <div class="upload-icon">🎬</div>
+          <p>Drop file here or click to upload</p>
+          <small>Video, image, or audio</small>
+          <div class="upload-filename" id="sg-filename"></div>
+          <input type="file" id="sg-file" accept="video/*,image/*,audio/*,.mp4,.mp3,.wav,.png,.jpg,.jpeg,.gif,.webp">
+        </div>
+
+        <div class="form-group">
+          <label>Text / Context (optional)</label>
+          <textarea id="sg-text" rows="3" placeholder="Additional context or text-only prompt…"></textarea>
+        </div>
+
+        <div class="form-row-3">
+          <div class="form-group">
+            <label>Output type</label>
+            <select id="sg-output-type">
+              <option value="json">JSON</option>
+              <option value="overlay">Overlay</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Frames</label>
+            <input type="number" id="sg-frames" placeholder="default" min="1" max="64">
+          </div>
+          <div class="form-group">
+            <label>Temperature</label>
+            <input type="number" id="sg-temperature" placeholder="default" min="0" max="2" step="0.1">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Scene graph mode</label>
+          <div class="mode-toggle">
+            <label class="mode-option">
+              <input type="radio" name="sg-mode" value="high" checked>
+              <span class="mode-label">
+                <strong>High-level</strong>
+                <small>Events, named entities, decisions — for news &amp; documentary</small>
+              </span>
+            </label>
+            <label class="mode-option">
+              <input type="radio" name="sg-mode" value="low">
+              <span class="mode-label">
+                <strong>Low-level</strong>
+                <small>Objects, positions, physical actions — for everyday video</small>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <details class="prompt-inline" id="sg-prompt-details">
+          <summary class="prompt-inline-summary">
+            <span>Prompt</span>
+            <span class="prompt-inline-slot" id="sg-prompt-slot">scenegraph_visual_high</span>
+            <span class="prompt-badge custom" id="sg-prompt-modified" style="display:none">Modified</span>
+          </summary>
+          <div class="prompt-inline-body">
+            <textarea class="prompt-textarea" id="sg-prompt-ta" rows="10" spellcheck="false"></textarea>
+            <div class="prompt-inline-footer">
+              <div class="prompt-save-opts">
+                <label class="prompt-save-opt">
+                  <input type="radio" name="sg-prompt-save" value="once" checked> Use once
+                </label>
+                <label class="prompt-save-opt">
+                  <input type="radio" name="sg-prompt-save" value="permanent"> Save as default
+                </label>
+              </div>
+              <button class="btn btn-secondary btn-sm" id="sg-prompt-reset" style="display:none">↩ Reset</button>
+            </div>
+          </div>
+        </details>
+
+        <button class="btn btn-primary" id="sg-submit">Generate Scene Graph</button>
+
+        <div class="status-box" id="sg-status">
+          <div class="spinner" id="sg-spinner"></div>
+          <span id="sg-status-text">Processing…</span>
+        </div>
+      </div>
+
+      <!-- Result panel -->
+      <div class="card">
+        <div class="result-header">
+          <div class="card-title" style="margin:0">Results</div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-secondary btn-sm" id="sg-copy-btn" style="display:none">Copy JSON</button>
+            <a class="btn btn-secondary btn-sm" id="sg-download-btn" style="display:none" download>Download</a>
+          </div>
+        </div>
+        <div class="result-area" id="sg-result">
+          <div class="empty">
+            <p>Submit a request to see results here.</p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── Validate tab ────────────────────────────────────────────── -->
+  <section id="tab-validate" class="tab-pane">
+    <div class="split">
+
+      <!-- Input panel -->
+      <div class="card">
+        <div class="card-title">Input</div>
+
+        <div class="upload-zone" id="val-upload-zone">
+          <div class="upload-icon">📋</div>
+          <p>Drop file here or click to upload</p>
+          <small>Video, image, or audio</small>
+          <div class="upload-filename" id="val-filename"></div>
+          <input type="file" id="val-file" accept="video/*,image/*,audio/*,.mp4,.mp3,.wav,.png,.jpg,.jpeg,.gif,.webp">
+        </div>
+
+        <div class="form-group">
+          <label>Text claim / context (optional)</label>
+          <textarea id="val-text" rows="3" placeholder="Paste a claim or add context…"></textarea>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Database</label>
+            <select id="val-database"><option value="">default</option></select>
+          </div>
+          <div class="form-group">
+            <label>Top-K facts</label>
+            <input type="number" id="val-topk" placeholder="default" min="1" max="20">
+          </div>
+        </div>
+
+        <details class="prompt-inline" id="val-prompt-details">
+          <summary class="prompt-inline-summary">
+            <span>Prompt</span>
+            <span class="prompt-inline-slot" id="val-prompt-slot">validation</span>
+            <span class="prompt-badge custom" id="val-prompt-modified" style="display:none">Modified</span>
+          </summary>
+          <div class="prompt-inline-body">
+            <textarea class="prompt-textarea" id="val-prompt-ta" rows="10" spellcheck="false"></textarea>
+            <div class="prompt-inline-footer">
+              <div class="prompt-save-opts">
+                <label class="prompt-save-opt">
+                  <input type="radio" name="val-prompt-save" value="once" checked> Use once
+                </label>
+                <label class="prompt-save-opt">
+                  <input type="radio" name="val-prompt-save" value="permanent"> Save as default
+                </label>
+              </div>
+              <button class="btn btn-secondary btn-sm" id="val-prompt-reset" style="display:none">↩ Reset</button>
+            </div>
+          </div>
+        </details>
+
+        <button class="btn btn-primary" id="val-submit">Validate</button>
+
+        <div class="status-box" id="val-status">
+          <div class="spinner" id="val-spinner"></div>
+          <span id="val-status-text">Processing…</span>
+        </div>
+      </div>
+
+      <!-- Result panel -->
+      <div class="card">
+        <div class="result-header">
+          <div class="card-title" style="margin:0">Report</div>
+        </div>
+        <div class="result-area" id="val-result">
+          <div class="empty">
+            <p>Submit a request to see the fact-check report here.</p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── Databases tab ───────────────────────────────────────────── -->
+  <section id="tab-databases" class="tab-pane">
+
+    <div class="db-toolbar">
+      <label>Database:</label>
+      <select id="db-selector"><option value="">— none —</option></select>
+      <button class="btn btn-secondary btn-sm" id="db-refresh-btn">Refresh</button>
+      <button class="btn btn-secondary btn-sm" id="db-create-btn">+ New database</button>
+      <button class="btn btn-danger btn-sm" id="db-delete-btn" style="display:none">Delete database</button>
+    </div>
+
+    <div class="db-grid">
+
+      <!-- Add facts panel -->
+      <div class="card">
+        <div class="card-title">Add Facts</div>
+
+        <div class="form-group">
+          <label>Facts (semicolon-separated)</label>
+          <textarea id="db-facts-text" rows="5" placeholder="Fact one; Fact two; Fact three…"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label>Or upload .txt file (one fact per line)</label>
+          <div class="upload-zone" id="db-file-zone" style="padding:14px">
+            <p style="font-size:.85rem">Click to choose file</p>
+            <div class="upload-filename" id="db-file-name"></div>
+            <input type="file" id="db-facts-file" accept=".txt,text/plain">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Tags</label>
+            <input type="text" id="db-tags" placeholder="tag1,tag2">
+          </div>
+          <div class="form-group">
+            <label>Source</label>
+            <input type="text" id="db-source" placeholder="user" value="user">
+          </div>
+        </div>
+
+        <button class="btn btn-primary" id="db-add-btn">Add Facts</button>
+
+        <div class="status-box" id="db-add-status">
+          <div class="spinner" id="db-add-spinner"></div>
+          <span id="db-add-status-text">Adding facts…</span>
+        </div>
+      </div>
+
+      <!-- Facts list panel -->
+      <div class="card">
+        <div class="result-header">
+          <div class="card-title" style="margin:0">Facts</div>
+          <button class="btn btn-danger btn-sm" id="db-del-selected-btn" style="display:none">
+            Delete selected
+          </button>
+        </div>
+
+        <div class="search-row">
+          <input type="text" id="db-search" placeholder="Semantic search…">
+          <button class="btn btn-secondary btn-sm" id="db-search-btn">Search</button>
+          <button class="btn btn-secondary btn-sm" id="db-search-clear-btn">All</button>
+        </div>
+
+        <div id="db-facts-container">
+          <div class="empty"><p>Select a database to browse facts.</p></div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+
+</main>
+
+<!-- New-database modal -->
+<div class="modal-backdrop" id="new-db-modal">
+  <div class="modal">
+    <h3>Create new database</h3>
+    <div class="form-group">
+      <label>Database name</label>
+      <input type="text" id="new-db-name" placeholder="e.g. politics_2024">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="new-db-cancel">Cancel</button>
+      <button class="btn btn-primary" id="new-db-confirm">Create</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

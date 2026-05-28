@@ -1,0 +1,48 @@
+# PRIDE Server configuration
+# All values here are defaults; override via environment variables (PRIDE_*)
+# or by editing this file.
+
+model:
+  name: "Qwen/Qwen3-VL-4B-Instruct-FP8"
+  backend: "vllm"           # vllm | transformers
+  device: "cuda"            # cuda | cpu | auto
+  dtype: "auto"             # auto | fp16 | bf16
+  max_new_tokens: 2048
+  temperature: 0.8
+  tensor_parallel_size: 1   # increase for multi-GPU (vllm only)
+  max_model_len: 32768      # cap KV cache length; your GPU fits ~41520 max
+
+whisper:
+  model_size: "large-v3"    # tiny | base | small | medium | large-v3
+  device: "cuda"
+  compute_type: "float16"   # float16 (GPU) | int8 (CPU)
+  language: null              # set to null for auto-detect
+  beam_size: 5
+  vad_filter: true          # voice-activity detection (reduces hallucinations)
+
+scenegraph:
+  num_frames: 16            # frames sampled per video segment
+  normalize_pass: true      # second MLLM pass for entity consistency
+  default_output: "json"    # json | overlay
+  # Adaptive temporal segmentation (no-ASR path)
+  temporal_target_fps: 1   # min frames/sec for adequate temporal coverage; drives the segment-length threshold
+  tokens_per_frame: 256       # estimated tokens consumed per sampled frame (Qwen3-VL ~256 typical)
+  prompt_overhead_tokens: 4096  # reserved tokens for prompt text + response
+
+validation:
+  top_k: 5                  # facts retrieved per validation query
+  default_db: "default"     # default fact database name
+  num_frames: 16             # video frames sampled for the MLLM validation call
+  embed_model: "Qwen/Qwen3-VL-Embedding-2B"   # embedding model for fact retrieval
+  embed_backend: "transformers"         # "transformers" | "vllm"
+  embed_max_length: 8192                # max token length for the encoder
+  embed_batch_size: 32                  # texts per forward pass (transformers backend)
+
+paths:
+  db_dir: "./data/db"       # ChromaDB persistent storage
+  tmp_dir: "./tmp"          # temporary downloaded media
+  output_dir: "./output"    # overlay videos / generated files
+
+discord:
+  max_upload_mb: 10         # Discord free-tier bot upload limit
+  guild_id: 1508352452821258311                # Set to your server ID for instant command sync (leave blank for global)
