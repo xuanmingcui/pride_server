@@ -240,14 +240,19 @@ class SceneGraphPipeline:
         except Exception as e:
             log.warning("Audio transcription skipped: %s", e)
 
+        if raw_output:
+            # Skip segmentation entirely — one call over the whole video
+            log.info("Raw output mode: bypassing segmentation, processing as single clip.")
+            return self._video_whole(video_path, transcript_text, user_text, temperature, num_frames,
+                                     mode, prompt_override, raw_output)
         if asr_segments:
             return self._video_by_segments(
                 video_path, asr_segments, transcript_text, user_text, temperature, num_frames, mode,
-                prompt_override, raw_output,
+                prompt_override,
             )
         log.info("No ASR segments → processing video as a single whole clip.")
         return self._video_whole(video_path, transcript_text, user_text, temperature, num_frames, mode,
-                                 prompt_override, raw_output)
+                                 prompt_override)
 
     # ------------------------------------------------------------------
     # Adaptive temporal segmentation (no-ASR path)
@@ -285,14 +290,14 @@ class SceneGraphPipeline:
         duration = _video_duration(video_path)
         max_seg_dur = self._max_segment_duration(num_frames)
 
-        if duration > max_seg_dur:
+        if duration > max_seg_dur and not raw_output:
             log.info(
                 "Video duration %.1fs exceeds adaptive threshold %.1fs — switching to temporal segmentation.",
                 duration, max_seg_dur,
             )
             return self._video_temporal(
                 video_path, duration, transcript_text, user_text, temperature, num_frames, max_seg_dur, mode,
-                prompt_override, raw_output,
+                prompt_override,
             )
 
         log.info("Mode: video (whole). Sampling %d frames …", num_frames)
@@ -307,10 +312,8 @@ class SceneGraphPipeline:
         if raw_output:
             raw_text = self._run_batch_raw(req, temperature)[0]
             log.info("Video (whole) raw done (%d chars).", len(raw_text))
-            return {
-                "triplets": [], "transcript": transcript_text,
-                "segments": [{"start": 0.0, "end": duration, "triplets": [], "raw_text": raw_text}],
-            }
+            # Return flat (no segments) so the UI shows one plain text block
+            return {"triplets": [], "segments": [], "transcript": transcript_text, "raw_text": raw_text}
         trips = self._run_batch(req, temperature, mode)[0]
         log.info("Video (whole) done: %d triplet(s).", len(trips))
         return {

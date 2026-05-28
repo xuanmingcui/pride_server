@@ -185,9 +185,7 @@ function renderSceneGraph(result, taskId) {
   const chips = document.createElement('div');
   chips.className = 'chips';
   if (isRaw) {
-    const segWord = `${segments.length} segment${segments.length !== 1 ? 's' : ''}`;
     chips.innerHTML =
-      `<span class="chip">${isTemporal ? segWord : 'image / text'}</span>` +
       `<span class="chip">raw text</span>`;
   } else if (isTemporal) {
     chips.innerHTML =
@@ -239,7 +237,7 @@ function renderSceneGraph(result, taskId) {
     header.className = 'segment-header';
     const timeStr = isTemporal && seg.start != null
       ? `${fmt(seg.start)} – ${fmt(seg.end)} &nbsp;·&nbsp; ` : '';
-    const segLabel = isTemporal ? `Segment ${i + 1}` : 'Triplets';
+    const segLabel = isRaw ? 'Raw output' : (isTemporal ? `Segment ${i + 1}` : 'Triplets');
     header.innerHTML =
       `<span>${segLabel}</span>` +
       `<span>${timeStr}${seg.triplets.length} triplet${seg.triplets.length !== 1 ? 's' : ''}</span>`;
