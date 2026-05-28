@@ -196,7 +196,7 @@ class SceneGraphPipeline:
         log.info("Mode: text-only. Running MLLM …")
         prompt = build_text_only_scenegraph_prompt(text, mode=mode, template_override=prompt_override)
         trips = self._run_batch([{"prompt": prompt, "frames": None, "fps": None}],
-                                temperature)[0]
+                                temperature, mode)[0]
         log.info("Text-only done: %d triplet(s).", len(trips))
         return {"triplets": trips, "segments": [], "transcript": text}
 
@@ -208,7 +208,7 @@ class SceneGraphPipeline:
         img = Image.open(image_path).convert("RGB")
         prompt = build_scenegraph_prompt("", mode=mode, user_text=text, template_override=prompt_override)
         trips = self._run_batch([{"prompt": prompt, "frames": [img], "fps": None}],
-                                temperature)[0]
+                                temperature, mode)[0]
         log.info("Image done: %d triplet(s).", len(trips))
         return {"triplets": trips, "segments": [], "transcript": text}
 
@@ -295,7 +295,7 @@ class SceneGraphPipeline:
         prompt = build_scenegraph_prompt(transcript_text, mode=mode, user_text=user_text,
                                          template_override=prompt_override)
         trips = self._run_batch([{"prompt": prompt, "frames": frames, "fps": fps}],
-                                temperature)[0]
+                                temperature, mode)[0]
         log.info("Video (whole) done: %d triplet(s).", len(trips))
         return {
             "triplets": trips,
@@ -345,7 +345,7 @@ class SceneGraphPipeline:
             return {"triplets": [], "quintuples": [], "segments": [], "transcript": transcript_text}
 
         log.info("Running MLLM batch: %d temporal segment(s) …", len(requests))
-        batch_results = self._run_batch(requests, temperature)
+        batch_results = self._run_batch(requests, temperature, mode)
 
         out_segments: List[Dict] = []
         all_trips: List[Triplet] = []
@@ -399,7 +399,7 @@ class SceneGraphPipeline:
             return {"triplets": [], "segments": [], "transcript": transcript_text}
 
         log.info("Running MLLM batch: %d request(s) …", len(requests))
-        batch_results = self._run_batch(requests, temperature)
+        batch_results = self._run_batch(requests, temperature, mode)
 
         out_segments: List[Dict] = []
         all_trips: List[Triplet] = []
@@ -422,7 +422,7 @@ class SceneGraphPipeline:
     # ------------------------------------------------------------------
 
     def _run_batch(
-        self, requests: List[Dict], temperature: Optional[float]
+        self, requests: List[Dict], temperature: Optional[float], mode: str = "high"
     ) -> List[List[Triplet]]:
         """Run batched inference, optionally overriding temperature."""
         if temperature is not None:
@@ -435,7 +435,7 @@ class SceneGraphPipeline:
         else:
             results = self.backend.generate_batch(requests)
 
-        if self.do_normalize:
+        if self.do_normalize and mode == "high":
             log.info("Running normalization pass on %d result(s) …", len(results))
             results = self._normalize_batch(results)
             log.info("Normalization done.")
