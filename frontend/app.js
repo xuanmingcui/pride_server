@@ -152,8 +152,9 @@ $('#sg-submit').addEventListener('click', async () => {
 });
 
 function renderSceneGraph(result, taskId) {
-  const segments = result.segments || [];
-  const total = segments.reduce((n, s) => n + s.triplets.length, 0);
+  const segments   = result.segments || [];
+  const isTemporal = result.is_temporal !== false;  // default true for backwards compat
+  const total      = segments.reduce((n, s) => n + s.triplets.length, 0);
   const hasOverlay = result.overlay_path;
 
   const container = $('#sg-result');
@@ -162,9 +163,15 @@ function renderSceneGraph(result, taskId) {
   // Summary chips
   const chips = document.createElement('div');
   chips.className = 'chips';
-  chips.innerHTML =
-    `<span class="chip"><strong>${segments.length}</strong> segment${segments.length !== 1 ? 's' : ''}</span>` +
-    `<span class="chip"><strong>${total}</strong> triplet${total !== 1 ? 's' : ''}</span>`;
+  if (isTemporal) {
+    chips.innerHTML =
+      `<span class="chip"><strong>${segments.length}</strong> segment${segments.length !== 1 ? 's' : ''}</span>` +
+      `<span class="chip"><strong>${total}</strong> triplet${total !== 1 ? 's' : ''}</span>`;
+  } else {
+    chips.innerHTML =
+      `<span class="chip">image / text</span>` +
+      `<span class="chip"><strong>${total}</strong> triplet${total !== 1 ? 's' : ''}</span>`;
+  }
   container.appendChild(chips);
 
   // Overlay video/image
@@ -204,9 +211,12 @@ function renderSceneGraph(result, taskId) {
 
     const header = document.createElement('div');
     header.className = 'segment-header';
+    const timeStr = isTemporal && seg.start != null
+      ? `${fmt(seg.start)} – ${fmt(seg.end)} &nbsp;·&nbsp; ` : '';
+    const segLabel = isTemporal ? `Segment ${i + 1}` : 'Triplets';
     header.innerHTML =
-      `<span>Segment ${i + 1}</span>` +
-      `<span>${fmt(seg.start)} – ${fmt(seg.end)} &nbsp;·&nbsp; ${seg.triplets.length} triplet${seg.triplets.length !== 1 ? 's' : ''}</span>`;
+      `<span>${segLabel}</span>` +
+      `<span>${timeStr}${seg.triplets.length} triplet${seg.triplets.length !== 1 ? 's' : ''}</span>`;
     card.appendChild(header);
 
     const body = document.createElement('div');
@@ -231,14 +241,16 @@ function renderSceneGraph(result, taskId) {
   container.appendChild(list);
 
   if (segments.length === 0) {
-    container.innerHTML = '<div class="empty"><p>No segments returned.</p></div>';
+    container.innerHTML = '<div class="empty"><p>No triplets extracted.</p></div>';
   }
 
   // JSON copy button
   const copyBtn = $('#sg-copy-btn');
   copyBtn.style.display = '';
   copyBtn.onclick = () => {
-    const json = JSON.stringify({ segments }, null, 2);
+    const json = isTemporal
+      ? JSON.stringify({ segments }, null, 2)
+      : JSON.stringify({ triplets: segments[0]?.triplets || [] }, null, 2);
     navigator.clipboard.writeText(json).then(() => toast('JSON copied!', 'success'));
   };
 }

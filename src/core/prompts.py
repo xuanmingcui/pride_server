@@ -27,7 +27,7 @@ def _defaults() -> Dict[str, str]:
         "scenegraph_visual_high": """\
 You are an expert multimodal scene graph extractor focused on high-level, semantically meaningful relationships.
 
-Analyze the provided video frames and extract the most important relationships between entities.
+Analyze the provided image or video frames and extract the most important relationships between entities.
 
 Rules:
 1. PRIORITIZE HIGH-LEVEL EVENTS AND ACTIONS: capture what is *happening* — political decisions, negotiations, conflicts, endorsements, protests, announcements — not low-level physical positions.
@@ -60,7 +60,7 @@ Output scene graph triplets:
         "scenegraph_visual_low": """\
 You are a visual scene graph extractor focused on concrete, observable relationships.
 
-Analyze the provided video frames and extract the most important physical, spatial, and visual relationships.
+Analyze the provided image or video frames and extract the most important physical, spatial, and visual relationships.
 
 Rules:
 1. FOCUS ON VISUAL/PHYSICAL RELATIONSHIPS: how objects and people are positioned, what actions are being performed, what attributes (color, size, state) are notable.

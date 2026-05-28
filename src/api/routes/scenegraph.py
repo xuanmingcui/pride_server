@@ -81,18 +81,38 @@ async def start_scenegraph(
                 mode=_mode,
                 prompt_override=_prompt_override,
             )
-            return {
-                "segments": [
+            raw_segs = raw.get("segments", [])
+            is_temporal = bool(raw_segs)
+
+            if is_temporal:
+                segments_out = [
                     {
                         "start": seg["start"],
-                        "end": seg["end"],
+                        "end":   seg["end"],
                         "triplets": [
                             {"subject": t[0], "relation": t[1], "object": t[2]}
                             for t in seg.get("triplets", [])
                         ],
                     }
-                    for seg in raw.get("segments", [])
-                ],
+                    for seg in raw_segs
+                ]
+            else:
+                # Image or text-only: flat triplets, no temporal axis
+                flat = raw.get("triplets", [])
+                segments_out = [
+                    {
+                        "start": None,
+                        "end":   None,
+                        "triplets": [
+                            {"subject": t[0], "relation": t[1], "object": t[2]}
+                            for t in flat
+                        ],
+                    }
+                ] if flat else []
+
+            return {
+                "is_temporal":  is_temporal,
+                "segments":     segments_out,
                 "overlay_path": raw.get("overlay_path"),
                 "overlay_error": raw.get("overlay_error"),
             }

@@ -102,26 +102,40 @@ class SceneGraphCog(commands.Cog):
 
             # Format response
             segments    = result.get("segments", [])
-            total_items = sum(len(seg.get("triplets", [])) for seg in segments)
-            msg_lines   = [f"**Scene Graph** — {len(segments)} segment(s), {total_items} triplet(s)"]
+            is_temporal = bool(segments)
+            flat_trips  = result.get("triplets", [])  # populated for image / text-only
+            total_items = (
+                sum(len(seg.get("triplets", [])) for seg in segments)
+                if is_temporal else len(flat_trips)
+            )
+            kind = f"{len(segments)} segment(s)" if is_temporal else "image/text"
+            msg_lines = [f"**Scene Graph** — {kind}, {total_items} triplet(s)"]
 
             overlay_path = result.get("overlay_path")
             overlay_err  = result.get("overlay_error")
 
             if output_type == "json" or not overlay_path:
-                json_data = {
-                    "segments": [
-                        {
-                            "start": seg["start"],
-                            "end":   seg["end"],
-                            "triplets": [
-                                {"subject": s, "relation": r, "object": o}
-                                for s, r, o in seg.get("triplets", [])
-                            ],
-                        }
-                        for seg in segments
-                    ],
-                }
+                if is_temporal:
+                    json_data = {
+                        "segments": [
+                            {
+                                "start": seg["start"],
+                                "end":   seg["end"],
+                                "triplets": [
+                                    {"subject": s, "relation": r, "object": o}
+                                    for s, r, o in seg.get("triplets", [])
+                                ],
+                            }
+                            for seg in segments
+                        ],
+                    }
+                else:
+                    json_data = {
+                        "triplets": [
+                            {"subject": s, "relation": r, "object": o}
+                            for s, r, o in flat_trips
+                        ],
+                    }
                 json_bytes = json.dumps(json_data, ensure_ascii=False, indent=2).encode()
 
                 if overlay_err:
@@ -138,9 +152,8 @@ class SceneGraphCog(commands.Cog):
                     msg_lines.append(
                         f"⚠️ Overlay file ({size_mb:.1f} MB) exceeds Discord limit ({max_mb} MB). Sending JSON instead."
                     )
-                    fallback_trips = result.get("triplets", [])
                     json_bytes = json.dumps(
-                        [{"subject": s, "relation": r, "object": o} for s, r, o in fallback_trips],
+                        [{"subject": s, "relation": r, "object": o} for s, r, o in flat_trips],
                         ensure_ascii=False, indent=2
                     ).encode()
                     await interaction.followup.send(
