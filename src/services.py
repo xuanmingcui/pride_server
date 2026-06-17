@@ -88,7 +88,8 @@ class ModelServices:
             db=db,
             whisper_config=whisper_cfg,
             top_k=cfg["validation"]["top_k"],
-            num_frames=cfg["validation"].get("num_frames", 8),
+            fps=float(cfg["validation"].get("fps", 1.0)),
+            min_frames=int(cfg["validation"].get("min_frames", 4)),
             tmp_dir=paths["tmp_dir"],
         )
 

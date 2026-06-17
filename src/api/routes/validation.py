@@ -30,7 +30,8 @@ async def start_validate(
     text: Optional[str] = Form(None),
     database: Optional[str] = Form(None),
     top_k: Optional[int] = Form(None),
-    prompt_override: Optional[str] = Form(None),
+    system_prompt_override: Optional[str] = Form(None),
+    user_prompt_override: Optional[str] = Form(None),
 ):
     """Submit a validation task; returns {task_id} for polling."""
     services = _svc(request)
@@ -53,7 +54,10 @@ async def start_validate(
 
     vp = services.val_pipeline
     _text = text or ""
-    _prompt_override = prompt_override or None
+    _prompt_override = (
+        {"system": system_prompt_override, "user": user_prompt_override}
+        if (system_prompt_override or user_prompt_override) else None
+    )
 
     def _run():
         try:

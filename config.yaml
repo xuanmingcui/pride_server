@@ -21,18 +21,25 @@ whisper:
   vad_filter: true          # voice-activity detection (reduces hallucinations)
 
 scenegraph:
-  num_frames: 16            # frames sampled per video segment
-  normalize_pass: true      # second MLLM pass for entity consistency
+  fps: 1.0                  # target frame sampling rate (frames per second). Per MLLM call we
+                            # sample ceil(window_seconds * fps) frames, floored to min_frames and
+                            # capped by the context-budget cap below.
+  min_frames: 4             # never sample fewer than this from any window (short ASR segments
+                            # still get enough visual context; extra frames pad by duplication).
+  normalize_pass: false     # second MLLM pass for entity consistency / refinement (user-triggered)
   default_output: "json"    # json | overlay
-  # Adaptive temporal segmentation (no-ASR path)
-  temporal_target_fps: 1   # min frames/sec for adequate temporal coverage; drives the segment-length threshold
-  tokens_per_frame: 256       # estimated tokens consumed per sampled frame (Qwen3-VL ~256 typical)
+  tokens_per_frame: 256     # estimated tokens consumed per sampled frame (Qwen3-VL ~256 typical)
   prompt_overhead_tokens: 4096  # reserved tokens for prompt text + response
+  # Context-budget cap on frames per call is derived from model.max_model_len
+  # minus prompt_overhead_tokens, divided by tokens_per_frame. Long videos that
+  # exceed (max_frames_per_call / fps) seconds are split into windows of that
+  # length and each window is sampled at `fps`.
 
 validation:
   top_k: 5                  # facts retrieved per validation query
   default_db: "default"     # default fact database name
-  num_frames: 16             # video frames sampled for the MLLM validation call
+  fps: 1.0                   # frame sampling rate (frames per second) for video validation input
+  min_frames: 4              # never sample fewer than this many frames from a video
   embed_model: "Qwen/Qwen3-VL-Embedding-2B"   # embedding model for fact retrieval
   embed_backend: "transformers"         # "transformers" | "vllm"
   embed_max_length: 8192                # max token length for the encoder

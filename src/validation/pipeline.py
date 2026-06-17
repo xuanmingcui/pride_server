@@ -26,7 +26,8 @@ from .database import FactDatabase
 
 log = logging.getLogger("pride.validation")
 
-_DEFAULT_NUM_FRAMES = 8
+_DEFAULT_FPS        = 1.0
+_DEFAULT_MIN_FRAMES = 4
 _DEFAULT_TOP_K      = 5
 _DEFAULT_MAX_TOKENS = 1024
 
@@ -72,9 +73,10 @@ def _build_validation_prompt(
     transcript: str,
     text: str,
     has_visual: bool,
-    template_override: Optional[str] = None,
-) -> str:
-    from ..core.prompts import get_store
+    template_override: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Return the {system, user} pair for the validation MLLM call."""
+    from ..core.triplets import _render_pair
 
     facts_block = (
         "\n".join(f"  {i+1}. {f}" for i, f in enumerate(facts))
@@ -97,22 +99,15 @@ def _build_validation_prompt(
         ctx_parts.append(f"SUBMITTED TEXT:\n{text}")
     context_block = ("\n\n" + "\n\n".join(ctx_parts)) if ctx_parts else ""
 
-    if template_override:
-        try:
-            return template_override.format(
-                database=database,
-                facts_block=facts_block,
-                input_desc=input_desc,
-                context_block=context_block,
-            )
-        except (KeyError, ValueError):
-            return template_override
-    return get_store().render(
+    return _render_pair(
         "validation",
-        database=database,
-        facts_block=facts_block,
-        input_desc=input_desc,
-        context_block=context_block,
+        template_override,
+        {
+            "database":      database,
+            "facts_block":   facts_block,
+            "input_desc":    input_desc,
+            "context_block": context_block,
+        },
     )
 
 
@@ -128,7 +123,10 @@ class ValidationPipeline:
         db:         FactDatabase backed by MultimodalEmbedder.
         whisper_config: Whisper transcription config (forwarded from app config).
         top_k:      Number of facts to retrieve.
-        num_frames: Frames sampled from video for the MLLM validation call.
+        fps:        Target frame sampling rate (frames per second) for video input.
+                    Per-call frame count = ceil(window_seconds * fps), clamped to
+                    [min_frames, context cap].
+        min_frames: Lower bound on frames sampled from a video (default 4).
         tmp_dir:    Temp directory for intermediate audio files.
     """
 
@@ -138,14 +136,16 @@ class ValidationPipeline:
         db: FactDatabase,
         whisper_config: Dict[str, Any],
         top_k: int = _DEFAULT_TOP_K,
-        num_frames: int = _DEFAULT_NUM_FRAMES,
+        fps: float = _DEFAULT_FPS,
+        min_frames: int = _DEFAULT_MIN_FRAMES,
         tmp_dir: str = "/tmp",
     ):
         self.backend   = backend
         self.db        = db
         self.whisper   = whisper_config
         self.top_k     = top_k
-        self.num_frames = num_frames
+        self.fps       = float(fps)
+        self.min_frames = int(min_frames)
         self.tmp_dir   = tmp_dir
 
     def validate(
@@ -155,7 +155,7 @@ class ValidationPipeline:
         text: str = "",
         top_k: Optional[int] = None,
         temperature: Optional[float] = None,
-        prompt_override: Optional[str] = None,
+        prompt_override: Optional[Dict[str, str]] = None,
     ) -> ValidationReport:
         k = top_k or self.top_k
 
@@ -171,9 +171,11 @@ class ValidationPipeline:
                 except Exception as e:
                     log.warning("Could not open image %s: %s", media_path, e)
             else:
-                # Video — sample frames
+                # Video — sample frames at the configured fps
                 duration = _video_duration(media_path)
-                sampled, fps = sample_frames(media_path, self.num_frames)
+                sampled, _eff_fps = sample_frames(
+                    media_path, self.fps, min_frames=self.min_frames,
+                )
                 frames = sampled or []
                 # Attempt audio transcription
                 try:
@@ -196,7 +198,7 @@ class ValidationPipeline:
 
         # ── 3. Build prompt and call MLLM ─────────────────────────────────────
         has_visual = bool(frames)
-        prompt = _build_validation_prompt(
+        pair = _build_validation_prompt(
             facts             = retrieved,
             database          = database,
             transcript        = transcript,
@@ -208,10 +210,11 @@ class ValidationPipeline:
         log.info("Running MLLM validation (frames=%d, max_tokens=%d) …",
                  len(frames), _DEFAULT_MAX_TOKENS)
         report_text = self.backend.generate_raw(
-            prompt    = prompt,
-            frames    = frames if frames else None,
-            fps       = 1.0 if frames else None,
-            max_tokens = _DEFAULT_MAX_TOKENS,
+            user_prompt   = pair["user"],
+            system_prompt = pair["system"],
+            frames        = frames if frames else None,
+            fps           = 1.0 if frames else None,
+            max_tokens    = _DEFAULT_MAX_TOKENS,
         )
         log.info("Validation report generated (%d chars).", len(report_text))
 

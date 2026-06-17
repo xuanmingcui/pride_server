@@ -44,18 +44,18 @@
           <div class="form-group">
             <label>Output type</label>
             <select id="sg-output-type">
-              <option value="json">JSON triplets</option>
+              <option value="json">JSON</option>
               <option value="raw">Raw text</option>
               <option value="overlay">Overlay</option>
             </select>
           </div>
           <div class="form-group">
-            <label>Frames</label>
-            <input type="number" id="sg-frames" placeholder="default" min="1" max="64">
+            <label>FPS</label>
+            <input type="number" id="sg-fps" placeholder="1.0" min="0.1" max="30" step="0.1">
           </div>
           <div class="form-group">
             <label>Temperature</label>
-            <input type="number" id="sg-temperature" placeholder="default" min="0" max="2" step="0.1">
+            <input type="number" id="sg-temperature" placeholder="0.8" min="0" max="2" step="0.1">
           </div>
         </div>
 
@@ -79,6 +79,16 @@
           </div>
         </div>
 
+        <div class="form-group">
+          <label class="checkbox-inline">
+            <input type="checkbox" id="sg-normalize-pre">
+            <span>
+              <strong>Run refinement pass</strong>
+              <small>Second MLLM pass that normalizes entity names, tightens vague relations, merges near-duplicates, and drops low-quality rows. Adds latency. You can also run it after the fact from the result panel.</small>
+            </span>
+          </label>
+        </div>
+
         <details class="prompt-inline" id="sg-prompt-details">
           <summary class="prompt-inline-summary">
             <span>Prompt</span>
@@ -86,7 +96,14 @@
             <span class="prompt-badge custom" id="sg-prompt-modified" style="display:none">Modified</span>
           </summary>
           <div class="prompt-inline-body">
-            <textarea class="prompt-textarea" id="sg-prompt-ta" rows="10" spellcheck="false"></textarea>
+            <label class="prompt-part-label">System prompt
+              <small>Role, rules, examples, output format. Sent in the <code>system</code> role.</small>
+            </label>
+            <textarea class="prompt-textarea" id="sg-prompt-system-ta" rows="10" spellcheck="false"></textarea>
+            <label class="prompt-part-label">User prompt
+              <small>Request-specific input (transcript, duration, context). Sent in the <code>user</code> role.</small>
+            </label>
+            <textarea class="prompt-textarea" id="sg-prompt-user-ta" rows="6" spellcheck="false"></textarea>
             <div class="prompt-inline-footer">
               <div class="prompt-save-opts">
                 <label class="prompt-save-opt">
@@ -114,6 +131,10 @@
         <div class="result-header">
           <div class="card-title" style="margin:0">Results</div>
           <div style="display:flex;gap:6px">
+            <button class="btn btn-secondary btn-sm" id="sg-normalize-btn" style="display:none"
+                    title="Refinement pass: normalize entities, tighten relations, drop duplicates / low-quality rows. Times are preserved.">
+              Refine results
+            </button>
             <button class="btn btn-secondary btn-sm" id="sg-copy-btn" style="display:none">Copy JSON</button>
             <a class="btn btn-secondary btn-sm" id="sg-download-btn" style="display:none" download>Download</a>
           </div>
@@ -167,7 +188,14 @@
             <span class="prompt-badge custom" id="val-prompt-modified" style="display:none">Modified</span>
           </summary>
           <div class="prompt-inline-body">
-            <textarea class="prompt-textarea" id="val-prompt-ta" rows="10" spellcheck="false"></textarea>
+            <label class="prompt-part-label">System prompt
+              <small>Fact-checker role + report structure. Sent in the <code>system</code> role.</small>
+            </label>
+            <textarea class="prompt-textarea" id="val-prompt-system-ta" rows="8" spellcheck="false"></textarea>
+            <label class="prompt-part-label">User prompt
+              <small>Retrieved facts and submitted input. Sent in the <code>user</code> role.</small>
+            </label>
+            <textarea class="prompt-textarea" id="val-prompt-user-ta" rows="6" spellcheck="false"></textarea>
             <div class="prompt-inline-footer">
               <div class="prompt-save-opts">
                 <label class="prompt-save-opt">

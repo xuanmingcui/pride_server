@@ -21,7 +21,7 @@ _HELP_EMBED.add_field(
         "from a **video**, **image**, or **text**.\n"
         "Optionally returns an annotated overlay video/image.\n"
         "**Options:** `media` · `text` · `output_type` (json/overlay) · "
-        "`mode` (high/low) · `temperature` · `num_frames`\n"
+        "`mode` (high/low) · `temperature` · `fps` · `normalize`\n"
         "• **high** — semantic, named entities & events (news/documentary)\n"
         "• **low**  — physical objects, positions & actions (everyday video)"
     ),

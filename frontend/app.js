@@ -18,6 +18,14 @@ function fmt(secs) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+function fmtTimeRange(start, end) {
+  if (start == null || end == null) return '';
+  const fmtOne = v => (Number(v) < 60
+    ? `${Number(v).toFixed(2)}s`
+    : fmt(v) + `.${String(Math.floor((Number(v) % 1) * 100)).padStart(2, '0')}`);
+  return `${fmtOne(start)} – ${fmtOne(end)}`;
+}
+
 function copyToClipboard(text) {
   const execFallback = () => {
     const ta = document.createElement('textarea');
@@ -108,6 +116,11 @@ setupUploadZone('db-file-zone', 'db-facts-file', 'db-file-name');
    SCENE GRAPH
 ══════════════════════════════════════════════════════════════════ */
 
+// Most recent scene-graph result; kept here so the "Normalize entities"
+// button can re-submit its segments to /api/scenegraph/normalize.
+let _sgLastResult = null;
+let _sgLastTaskId = null;
+
 $('#sg-submit').addEventListener('click', async () => {
   const file = $('#sg-file').files[0];
   const text = $('#sg-text').value.trim();
@@ -118,25 +131,34 @@ $('#sg-submit').addEventListener('click', async () => {
   setStatus('sg', 'Submitting…');
   $('#sg-copy-btn').style.display = 'none';
   $('#sg-download-btn').style.display = 'none';
+  $('#sg-normalize-btn').style.display = 'none';
   $('#sg-result').innerHTML = '';
 
   try {
     // Handle prompt override / permanent save
     const detailsOpen = $('#sg-prompt-details').open;
-    const promptTa = $('#sg-prompt-ta');
-    const isModified = detailsOpen && promptTa.value !== _sgPrompt.serverTmpl;
+    const sysTa  = $('#sg-prompt-system-ta');
+    const userTa = $('#sg-prompt-user-ta');
+    const sysModified  = detailsOpen && sysTa.value  !== _sgPrompt.serverSys;
+    const userModified = detailsOpen && userTa.value !== _sgPrompt.serverUser;
+    const isModified = sysModified || userModified;
     const saveMode = document.querySelector('input[name="sg-prompt-save"]:checked').value;
 
     if (isModified && saveMode === 'permanent') {
+      const body = {};
+      if (sysModified)  body.system = sysTa.value;
+      if (userModified) body.user   = userTa.value;
       const pr = await fetch(`/api/prompts/${encodeURIComponent(_sgPrompt.name)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template: promptTa.value }),
+        body: JSON.stringify(body),
       });
       if (pr.ok) {
-        _promptCache[_sgPrompt.name].template = promptTa.value;
+        const pd = await pr.json();
+        _promptCache[_sgPrompt.name].template = pd.template;
         _promptCache[_sgPrompt.name].is_custom = true;
-        _sgPrompt.serverTmpl = promptTa.value;
+        _sgPrompt.serverSys  = pd.template.system;
+        _sgPrompt.serverUser = pd.template.user;
         updateSgPromptModifiedBadge();
         $('#sg-prompt-reset').style.display = '';
         toast('Prompt saved as default.', 'success');
@@ -150,11 +172,16 @@ $('#sg-submit').addEventListener('click', async () => {
     fd.append('output_type', outputType === 'raw' ? 'json' : outputType);
     fd.append('raw_output', outputType === 'raw' ? 'true' : 'false');
     fd.append('mode', document.querySelector('input[name="sg-mode"]:checked').value);
-    const frames = $('#sg-frames').value;
-    if (frames) fd.append('num_frames', frames);
+    const normalizePre = $('#sg-normalize-pre').checked;
+    fd.append('normalize', normalizePre ? 'true' : 'false');
+    const fps = $('#sg-fps').value;
+    if (fps) fd.append('fps', fps);
     const temp = $('#sg-temperature').value;
     if (temp) fd.append('temperature', temp);
-    if (isModified && saveMode === 'once') fd.append('prompt_override', promptTa.value);
+    if (isModified && saveMode === 'once') {
+      if (sysModified)  fd.append('system_prompt_override', sysTa.value);
+      if (userModified) fd.append('user_prompt_override',   userTa.value);
+    }
 
     const r = await fetch('/api/scenegraph', { method: 'POST', body: fd });
     const j = await r.json();
@@ -163,6 +190,7 @@ $('#sg-submit').addEventListener('click', async () => {
     setStatus('sg', 'Processing (this may take a minute)…');
     const result = await pollTask(j.task_id, s => setStatus('sg', `Status: ${s}…`));
     setStatus('sg', null);
+    if (normalizePre) result.normalized = true;
     renderSceneGraph(result, j.task_id);
   } catch (err) {
     setStatus('sg', err.message, 'error');
@@ -172,14 +200,30 @@ $('#sg-submit').addEventListener('click', async () => {
 });
 
 function renderSceneGraph(result, taskId) {
+  _sgLastResult = result;
+  _sgLastTaskId = taskId;
+
   const segments   = result.segments || [];
   const isTemporal = result.is_temporal !== false;
   const isRaw      = result.raw_output === true;
   const total      = isRaw ? segments.length : segments.reduce((n, s) => n + s.triplets.length, 0);
   const hasOverlay = result.overlay_path;
 
+  // The Normalize button only applies to parsed (non-raw) results that
+  // actually carry triplets / quintuples to normalize.
+  const normalizeBtn = $('#sg-normalize-btn');
+  const canNormalize = !isRaw && total > 0;
+  normalizeBtn.style.display = canNormalize ? '' : 'none';
+  normalizeBtn.disabled = false;
+  normalizeBtn.textContent = 'Refine results';
+
   const container = $('#sg-result');
   container.innerHTML = '';
+
+  // Detect quintuple (video) vs triplet (image/text) output by inspecting first item.
+  const firstItem = segments.find(s => (s.triplets || []).length)?.triplets?.[0];
+  const hasTimes  = !!(firstItem && firstItem.start_sec != null);
+  const unit = hasTimes ? 'quintuple' : 'triplet';
 
   // Summary chips
   const chips = document.createElement('div');
@@ -190,11 +234,14 @@ function renderSceneGraph(result, taskId) {
   } else if (isTemporal) {
     chips.innerHTML =
       `<span class="chip"><strong>${segments.length}</strong> segment${segments.length !== 1 ? 's' : ''}</span>` +
-      `<span class="chip"><strong>${total}</strong> triplet${total !== 1 ? 's' : ''}</span>`;
+      `<span class="chip"><strong>${total}</strong> ${unit}${total !== 1 ? 's' : ''}</span>`;
   } else {
     chips.innerHTML =
       `<span class="chip">image / text</span>` +
-      `<span class="chip"><strong>${total}</strong> triplet${total !== 1 ? 's' : ''}</span>`;
+      `<span class="chip"><strong>${total}</strong> ${unit}${total !== 1 ? 's' : ''}</span>`;
+  }
+  if (result.normalized) {
+    chips.innerHTML += `<span class="chip" style="color:var(--accent);border-color:var(--accent)">refined</span>`;
   }
   container.appendChild(chips);
 
@@ -224,12 +271,18 @@ function renderSceneGraph(result, taskId) {
     container.appendChild(warn);
   }
 
-  // Segment list
+  // Segment list. For JSON/quintuple output, skip segments with no rows
+  // so the result panel only shows cards that have content. Raw cards are
+  // always rendered because their `raw_text` is the content.
   const list = document.createElement('div');
   list.className = 'segment-list';
   list.style.marginTop = '12px';
 
-  segments.forEach((seg, i) => {
+  const visibleSegments = isRaw
+    ? segments
+    : segments.filter(s => (s.triplets || []).length > 0);
+
+  visibleSegments.forEach((seg, i) => {
     const card = document.createElement('div');
     card.className = 'segment-card';
 
@@ -237,10 +290,12 @@ function renderSceneGraph(result, taskId) {
     header.className = 'segment-header';
     const timeStr = isTemporal && seg.start != null
       ? `${fmt(seg.start)} – ${fmt(seg.end)} &nbsp;·&nbsp; ` : '';
-    const segLabel = isRaw ? 'Raw output' : (isTemporal ? `Segment ${i + 1}` : 'Triplets');
+    const segLabel = isRaw
+      ? 'Raw output'
+      : (isTemporal ? `Segment ${i + 1}` : (hasTimes ? 'Quintuples' : 'Triplets'));
     header.innerHTML =
       `<span>${segLabel}</span>` +
-      `<span>${timeStr}${seg.triplets.length} triplet${seg.triplets.length !== 1 ? 's' : ''}</span>`;
+      `<span>${timeStr}${seg.triplets.length} ${unit}${seg.triplets.length !== 1 ? 's' : ''}</span>`;
     card.appendChild(header);
 
     const body = document.createElement('div');
@@ -251,16 +306,21 @@ function renderSceneGraph(result, taskId) {
       pre.className = 'raw-text-output';
       pre.textContent = seg.raw_text;
       body.appendChild(pre);
-    } else if (seg.triplets.length === 0) {
-      body.innerHTML = '<span style="color:var(--text-dim);font-size:.8rem">No triplets extracted.</span>';
     } else {
+      // Non-raw cards are only rendered when they have triplets (see filter
+      // above), so we can skip the empty-state branch here.
       seg.triplets.forEach(t => {
         const row = document.createElement('div');
-        row.className = 'triplet-row';
-        row.innerHTML =
+        const itemHasTime = t.start_sec != null && t.end_sec != null;
+        row.className = itemHasTime ? 'triplet-row with-time' : 'triplet-row';
+        const cells =
           `<span class="triplet-subj">${esc(t.subject)}</span>` +
           `<span class="triplet-rel">→ ${esc(t.relation)} →</span>` +
           `<span class="triplet-obj">${esc(t.object)}</span>`;
+        const timeCell = itemHasTime
+          ? `<span class="triplet-time">${esc(fmtTimeRange(t.start_sec, t.end_sec))}</span>`
+          : '';
+        row.innerHTML = cells + timeCell;
         body.appendChild(row);
       });
     }
@@ -269,8 +329,8 @@ function renderSceneGraph(result, taskId) {
   });
   container.appendChild(list);
 
-  if (segments.length === 0) {
-    container.innerHTML = '<div class="empty"><p>No triplets extracted.</p></div>';
+  if (visibleSegments.length === 0) {
+    container.innerHTML = `<div class="empty"><p>No ${unit}s extracted.</p></div>`;
   }
 
   // Copy button
@@ -292,6 +352,39 @@ function renderSceneGraph(result, taskId) {
     };
   }
 }
+
+$('#sg-normalize-btn').addEventListener('click', async () => {
+  if (!_sgLastResult || !_sgLastResult.segments) return;
+  const btn = $('#sg-normalize-btn');
+  btn.disabled = true;
+  btn.textContent = 'Refining…';
+  setStatus('sg', 'Refining results…');
+  try {
+    const body = JSON.stringify({ segments: _sgLastResult.segments });
+    const r = await fetch('/api/scenegraph/normalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Submission failed');
+    const result = await pollTask(j.task_id, s => setStatus('sg', `Status: ${s}…`));
+    setStatus('sg', null);
+    // Re-render with normalized segments, preserving overlay metadata so the
+    // existing player and download links stay valid.
+    const merged = {
+      ..._sgLastResult,
+      segments: result.segments || [],
+      normalized: true,
+    };
+    renderSceneGraph(merged, _sgLastTaskId);
+    toast('Results refined.', 'success');
+  } catch (err) {
+    setStatus('sg', err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Refine results';
+  }
+});
 
 function esc(s) {
   return String(s)
@@ -333,20 +426,28 @@ $('#val-submit').addEventListener('click', async () => {
   try {
     // Handle prompt override / permanent save
     const detailsOpen = $('#val-prompt-details').open;
-    const promptTa = $('#val-prompt-ta');
-    const isModified = detailsOpen && promptTa.value !== _valPrompt.serverTmpl;
+    const sysTa  = $('#val-prompt-system-ta');
+    const userTa = $('#val-prompt-user-ta');
+    const sysModified  = detailsOpen && sysTa.value  !== _valPrompt.serverSys;
+    const userModified = detailsOpen && userTa.value !== _valPrompt.serverUser;
+    const isModified = sysModified || userModified;
     const saveMode = document.querySelector('input[name="val-prompt-save"]:checked').value;
 
     if (isModified && saveMode === 'permanent') {
+      const body = {};
+      if (sysModified)  body.system = sysTa.value;
+      if (userModified) body.user   = userTa.value;
       const pr = await fetch('/api/prompts/validation', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template: promptTa.value }),
+        body: JSON.stringify(body),
       });
       if (pr.ok) {
-        _promptCache['validation'].template = promptTa.value;
+        const pd = await pr.json();
+        _promptCache['validation'].template = pd.template;
         _promptCache['validation'].is_custom = true;
-        _valPrompt.serverTmpl = promptTa.value;
+        _valPrompt.serverSys  = pd.template.system;
+        _valPrompt.serverUser = pd.template.user;
         updateValPromptModifiedBadge();
         $('#val-prompt-reset').style.display = '';
         toast('Prompt saved as default.', 'success');
@@ -360,7 +461,10 @@ $('#val-submit').addEventListener('click', async () => {
     if (db) fd.append('database', db);
     const topk = $('#val-topk').value;
     if (topk) fd.append('top_k', topk);
-    if (isModified && saveMode === 'once') fd.append('prompt_override', promptTa.value);
+    if (isModified && saveMode === 'once') {
+      if (sysModified)  fd.append('system_prompt_override', sysTa.value);
+      if (userModified) fd.append('user_prompt_override',   userTa.value);
+    }
 
     const r = await fetch('/api/validate', { method: 'POST', body: fd });
     const j = await r.json();
@@ -698,12 +802,16 @@ async function initPromptCache() {
 
 /* ── Scene Graph inline prompt ──────────────────────────────────── */
 
-let _sgPrompt = { name: '', serverTmpl: '' };
+let _sgPrompt = { name: '', serverSys: '', serverUser: '' };
 
 function getSgPromptName() {
-  const hasFile = !!$('#sg-file').files[0];
+  const file = $('#sg-file').files[0];
   const mode = document.querySelector('input[name="sg-mode"]:checked').value;
-  return hasFile ? `scenegraph_visual_${mode}` : `scenegraph_text_${mode}`;
+  if (!file) return `scenegraph_text_${mode}`;
+  // Video files use the video-segment quintuple prompt; images use the visual triplet prompt.
+  const isVideo = (file.type && file.type.startsWith('video/'))
+    || /\.(mp4|mov|m4v|webm|mkv|avi|flv|wmv|mpg|mpeg|3gp)$/i.test(file.name);
+  return isVideo ? `scenegraph_video_${mode}` : `scenegraph_visual_${mode}`;
 }
 
 function loadSgPromptFromCache() {
@@ -712,15 +820,18 @@ function loadSgPromptFromCache() {
   const p = _promptCache[name];
   if (!p) return;
   _sgPrompt.name = name;
-  _sgPrompt.serverTmpl = p.template;
+  _sgPrompt.serverSys  = p.template.system;
+  _sgPrompt.serverUser = p.template.user;
   $('#sg-prompt-slot').textContent = name;
-  $('#sg-prompt-ta').value = p.template;
+  $('#sg-prompt-system-ta').value = p.template.system;
+  $('#sg-prompt-user-ta').value   = p.template.user;
   $('#sg-prompt-reset').style.display = p.is_custom ? '' : 'none';
   updateSgPromptModifiedBadge();
 }
 
 function updateSgPromptModifiedBadge() {
-  const modified = $('#sg-prompt-ta').value !== _sgPrompt.serverTmpl;
+  const modified = $('#sg-prompt-system-ta').value !== _sgPrompt.serverSys
+                 || $('#sg-prompt-user-ta').value !== _sgPrompt.serverUser;
   $('#sg-prompt-modified').style.display = modified ? '' : 'none';
 }
 
@@ -734,7 +845,8 @@ $('#sg-file').addEventListener('change', () => {
   loadSgPromptFromCache();
 });
 
-$('#sg-prompt-ta').addEventListener('input', updateSgPromptModifiedBadge);
+$('#sg-prompt-system-ta').addEventListener('input', updateSgPromptModifiedBadge);
+$('#sg-prompt-user-ta').addEventListener('input', updateSgPromptModifiedBadge);
 
 $('#sg-prompt-reset').addEventListener('click', async () => {
   if (!_sgPrompt.name || !confirm(`Reset "${_sgPrompt.name}" to built-in default?`)) return;
@@ -746,8 +858,10 @@ $('#sg-prompt-reset').addEventListener('click', async () => {
       _promptCache[_sgPrompt.name].template = data.template;
       _promptCache[_sgPrompt.name].is_custom = false;
     }
-    _sgPrompt.serverTmpl = data.template;
-    $('#sg-prompt-ta').value = data.template;
+    _sgPrompt.serverSys  = data.template.system;
+    _sgPrompt.serverUser = data.template.user;
+    $('#sg-prompt-system-ta').value = data.template.system;
+    $('#sg-prompt-user-ta').value   = data.template.user;
     $('#sg-prompt-reset').style.display = 'none';
     updateSgPromptModifiedBadge();
     toast('Prompt reset to default.', 'success');
@@ -758,24 +872,28 @@ $('#sg-prompt-reset').addEventListener('click', async () => {
 
 /* ── Validate inline prompt ─────────────────────────────────────── */
 
-let _valPrompt = { serverTmpl: '' };
+let _valPrompt = { serverSys: '', serverUser: '' };
 
 function loadValPromptFromCache() {
   const p = _promptCache['validation'];
   if (!p) return;
-  _valPrompt.serverTmpl = p.template;
+  _valPrompt.serverSys  = p.template.system;
+  _valPrompt.serverUser = p.template.user;
   $('#val-prompt-slot').textContent = 'validation';
-  $('#val-prompt-ta').value = p.template;
+  $('#val-prompt-system-ta').value = p.template.system;
+  $('#val-prompt-user-ta').value   = p.template.user;
   $('#val-prompt-reset').style.display = p.is_custom ? '' : 'none';
   updateValPromptModifiedBadge();
 }
 
 function updateValPromptModifiedBadge() {
-  const modified = $('#val-prompt-ta').value !== _valPrompt.serverTmpl;
+  const modified = $('#val-prompt-system-ta').value !== _valPrompt.serverSys
+                 || $('#val-prompt-user-ta').value !== _valPrompt.serverUser;
   $('#val-prompt-modified').style.display = modified ? '' : 'none';
 }
 
-$('#val-prompt-ta').addEventListener('input', updateValPromptModifiedBadge);
+$('#val-prompt-system-ta').addEventListener('input', updateValPromptModifiedBadge);
+$('#val-prompt-user-ta').addEventListener('input', updateValPromptModifiedBadge);
 
 $('#val-prompt-reset').addEventListener('click', async () => {
   if (!confirm('Reset "validation" prompt to built-in default?')) return;
@@ -787,8 +905,10 @@ $('#val-prompt-reset').addEventListener('click', async () => {
       _promptCache['validation'].template = data.template;
       _promptCache['validation'].is_custom = false;
     }
-    _valPrompt.serverTmpl = data.template;
-    $('#val-prompt-ta').value = data.template;
+    _valPrompt.serverSys  = data.template.system;
+    _valPrompt.serverUser = data.template.user;
+    $('#val-prompt-system-ta').value = data.template.system;
+    $('#val-prompt-user-ta').value   = data.template.user;
     $('#val-prompt-reset').style.display = 'none';
     updateValPromptModifiedBadge();
     toast('Prompt reset to default.', 'success');

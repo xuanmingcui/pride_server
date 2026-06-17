@@ -1,7 +1,7 @@
 """Discord slash commands for scene-graph generation (Function 1).
 
 /scenegraph  media:<attachment>  [text:<str>]  [output_type:json|overlay]
-             [mode:high|low]  [model:<str>]  [temperature:<float>]  [num_frames:<int>]
+             [mode:high|low]  [model:<str>]  [temperature:<float>]  [fps:<float>]  [normalize:<bool>]
 
 Workflow:
   1. Defer the interaction (processing takes time).
@@ -39,7 +39,8 @@ class SceneGraphCog(commands.Cog):
         output_type="Output format: 'json' (default) or 'overlay' (annotated video/image).",
         mode="Scene graph mode: 'high' for semantic/news (default), 'low' for physical/visual.",
         temperature="Sampling temperature (default from config, e.g. 0.8).",
-        num_frames="Frames sampled per video segment (default from config, e.g. 16).",
+        fps="Frame sampling rate (frames per second; default from config, e.g. 1.0). Per-call frame count = ceil(window_seconds × fps), clamped by min_frames and the context budget.",
+        normalize="Run the refinement pass after generation: entity normalization + dedup + quality filter (off by default; adds latency).",
         model="Override model name (must be loaded; restart required to change).",
     )
     @app_commands.choices(
@@ -60,7 +61,8 @@ class SceneGraphCog(commands.Cog):
         output_type: str = "json",
         mode: str = "high",
         temperature: Optional[float] = None,
-        num_frames: Optional[int] = None,
+        fps: Optional[float] = None,
+        normalize: bool = False,
         model: Optional[str] = None,
     ) -> None:
         if not media and not text:
@@ -97,10 +99,23 @@ class SceneGraphCog(commands.Cog):
                 output_path=out_path,
                 mode=_mode,
                 temperature=temperature,
-                num_frames=num_frames,
+                fps=fps,
+                normalize=normalize,
             )
 
-            # Format response
+            # Format response. Video segments carry quintuples (s, r, o, start_sec, end_sec);
+            # image / text-only carry triplets (s, r, o).
+            def _fmt_item(t):
+                if len(t) >= 5:
+                    return {
+                        "subject":   t[0],
+                        "relation":  t[1],
+                        "object":    t[2],
+                        "start_sec": float(t[3]),
+                        "end_sec":   float(t[4]),
+                    }
+                return {"subject": t[0], "relation": t[1], "object": t[2]}
+
             segments    = result.get("segments", [])
             is_temporal = bool(segments)
             flat_trips  = result.get("triplets", [])  # populated for image / text-only
@@ -109,7 +124,8 @@ class SceneGraphCog(commands.Cog):
                 if is_temporal else len(flat_trips)
             )
             kind = f"{len(segments)} segment(s)" if is_temporal else "image/text"
-            msg_lines = [f"**Scene Graph** — {kind}, {total_items} triplet(s)"]
+            unit = "quintuple" if is_temporal else "triplet"
+            msg_lines = [f"**Scene Graph** — {kind}, {total_items} {unit}(s)"]
 
             overlay_path = result.get("overlay_path")
             overlay_err  = result.get("overlay_error")
@@ -121,20 +137,14 @@ class SceneGraphCog(commands.Cog):
                             {
                                 "start": seg["start"],
                                 "end":   seg["end"],
-                                "triplets": [
-                                    {"subject": s, "relation": r, "object": o}
-                                    for s, r, o in seg.get("triplets", [])
-                                ],
+                                "triplets": [_fmt_item(t) for t in seg.get("triplets", [])],
                             }
                             for seg in segments
                         ],
                     }
                 else:
                     json_data = {
-                        "triplets": [
-                            {"subject": s, "relation": r, "object": o}
-                            for s, r, o in flat_trips
-                        ],
+                        "triplets": [_fmt_item(t) for t in flat_trips],
                     }
                 json_bytes = json.dumps(json_data, ensure_ascii=False, indent=2).encode()
 
@@ -153,7 +163,7 @@ class SceneGraphCog(commands.Cog):
                         f"⚠️ Overlay file ({size_mb:.1f} MB) exceeds Discord limit ({max_mb} MB). Sending JSON instead."
                     )
                     json_bytes = json.dumps(
-                        [{"subject": s, "relation": r, "object": o} for s, r, o in flat_trips],
+                        [_fmt_item(t) for t in flat_trips],
                         ensure_ascii=False, indent=2
                     ).encode()
                     await interaction.followup.send(
