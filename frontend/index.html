@@ -14,6 +14,7 @@
     <button class="tab-btn active" data-tab="scenegraph">Scene Graph</button>
     <button class="tab-btn" data-tab="validate">Validate</button>
     <button class="tab-btn" data-tab="misinfo">Misinfo</button>
+    <button class="tab-btn" data-tab="video">Video Library</button>
     <button class="tab-btn" data-tab="databases">Databases</button>
   </nav>
 </header>
@@ -123,7 +124,10 @@
 
         <div class="status-box" id="sg-status">
           <div class="spinner" id="sg-spinner"></div>
-          <span id="sg-status-text">Processing…</span>
+          <div class="status-main">
+            <span id="sg-status-text">Processing…</span>
+            <div class="stage-list" id="sg-stages" style="display:none"></div>
+          </div>
         </div>
       </div>
 
@@ -135,6 +139,10 @@
             <button class="btn btn-secondary btn-sm" id="sg-normalize-btn" style="display:none"
                     title="Refinement pass: normalize entities, tighten relations, drop duplicates / low-quality rows. Times are preserved.">
               Refine results
+            </button>
+            <button class="btn btn-secondary btn-sm" id="sg-addlib-btn" style="display:none"
+                    title="Index this video's scene graph into the Video Library so it can be retrieved by search.">
+              + Add to Library
             </button>
             <button class="btn btn-secondary btn-sm" id="sg-copy-btn" style="display:none">Copy JSON</button>
             <a class="btn btn-secondary btn-sm" id="sg-download-btn" style="display:none" download>Download</a>
@@ -284,6 +292,126 @@
     </div>
   </section>
 
+  <!-- ── Video Library tab ───────────────────────────────────────── -->
+  <section id="tab-video" class="tab-pane">
+    <div class="split">
+
+      <!-- Add to library panel -->
+      <div class="card">
+        <div class="card-title">Add Video to Library</div>
+
+        <div class="upload-zone" id="vl-upload-zone">
+          <div class="upload-icon">🎬</div>
+          <p>Drop video here or click to upload</p>
+          <small>A scene graph is generated, then indexed for retrieval</small>
+          <div class="upload-filename" id="vl-filename"></div>
+          <input type="file" id="vl-file" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi">
+        </div>
+
+        <div class="form-group">
+          <label>Title (optional)</label>
+          <input type="text" id="vl-title" placeholder="Defaults to the filename">
+        </div>
+
+        <div class="form-group">
+          <label>Scene graph mode</label>
+          <div class="mode-toggle">
+            <label class="mode-option">
+              <input type="radio" name="vl-mode" value="high" checked>
+              <span class="mode-label">
+                <strong>High-level</strong>
+                <small>Events, named entities, framing — for news &amp; documentary</small>
+              </span>
+            </label>
+            <label class="mode-option">
+              <input type="radio" name="vl-mode" value="low">
+              <span class="mode-label">
+                <strong>Low-level</strong>
+                <small>Objects, positions, physical actions — for everyday video</small>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-inline">
+            <input type="checkbox" id="vl-normalize" checked>
+            <span>
+              <strong>Run refinement pass</strong>
+              <small>Unify entity names, tighten relations, drop duplicates before indexing. Improves retrieval quality; adds latency.</small>
+            </span>
+          </label>
+        </div>
+
+        <button class="btn btn-primary" id="vl-index-btn">Generate &amp; Index</button>
+
+        <div class="status-box" id="vl-index-status">
+          <div class="spinner" id="vl-index-spinner"></div>
+          <span id="vl-index-status-text">Processing…</span>
+        </div>
+
+        <div class="result-header" style="margin-top:18px">
+          <div class="card-title" style="margin:0">Indexed videos (<span id="vl-lib-count">0</span>)</div>
+          <button class="btn btn-secondary btn-sm" id="vl-refresh-btn">Refresh</button>
+        </div>
+        <div id="vl-library-list">
+          <div class="empty"><p>No videos indexed yet.</p></div>
+        </div>
+      </div>
+
+      <!-- Search panel -->
+      <div class="card">
+        <div class="card-title">Search Videos</div>
+
+        <div class="form-group">
+          <label>Query <small style="color:var(--text-dim);font-weight:400">semantic — matches by meaning, not keywords</small></label>
+          <textarea id="vl-query" rows="2" placeholder="e.g. police in a crowded market; a man holding a flag; protest at night…"></textarea>
+        </div>
+
+        <div class="form-row-3">
+          <div class="form-group">
+            <label>Type filter</label>
+            <select id="vl-facet">
+              <option value="">Any</option>
+              <option value="people">People</option>
+              <option value="location">Location</option>
+              <option value="action">Action</option>
+              <option value="text">Text &amp; speech</option>
+              <option value="framing">Framing</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Must contain word</label>
+            <input type="text" id="vl-keyword" placeholder="exact, optional">
+          </div>
+          <div class="form-group">
+            <label>Max results</label>
+            <input type="number" id="vl-topk" placeholder="10" min="1" max="50">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Min relevance (0–1) — higher = stricter; 0 shows all</label>
+          <input type="number" id="vl-minscore" placeholder="0.30" min="0" max="1" step="0.05">
+        </div>
+
+        <button class="btn btn-primary" id="vl-search-btn">Search</button>
+
+        <div class="status-box" id="vl-search-status">
+          <div class="spinner" id="vl-search-spinner"></div>
+          <span id="vl-search-status-text">Searching…</span>
+        </div>
+
+        <div class="result-area" id="vl-results" style="margin-top:14px">
+          <div class="empty">
+            <p>Search your indexed videos by location, person, action, or any feature.</p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
   <!-- ── Databases tab ───────────────────────────────────────────── -->
   <section id="tab-databases" class="tab-pane">
 
@@ -377,6 +505,6 @@
 
 <div id="toast"></div>
 
-<script src="app.js?v=3"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

@@ -53,7 +53,7 @@ def validate_triplets(trips: List[Triplet]) -> List[Triplet]:
         o = re.sub(r"\s+", " ", o).strip()
         if not s or not r or not o:
             continue
-        if len(s) > 80 or len(r) > 80 or len(o) > 80:
+        if len(s) > 100 or len(r) > 80 or len(o) > 100:
             continue
         key = (s.lower(), r.lower(), o.lower())
         if key not in seen:
@@ -180,7 +180,7 @@ def validate_quintuples(quints: List[Quintuple]) -> List[Quintuple]:
         o = re.sub(r"\s+", " ", o).strip()
         if not s or not r or not o:
             continue
-        if len(s) > 80 or len(r) > 80 or len(o) > 80:
+        if len(s) > 100 or len(r) > 80 or len(o) > 100:
             continue
         key = (s.lower(), r.lower(), o.lower(), round(t0, 3), round(t1, 3))
         if key not in seen:
@@ -362,6 +362,14 @@ def build_video_segment_prompt(
 def build_normalize_prompt(trips: List[Triplet]) -> PromptPair:
     lines = "\n".join(f"- ({s}, {r}, {o})" for s, r, o in trips)
     return _render_pair("normalize", None, {"triplets": lines})
+
+
+def build_identify_subjects_prompt(transcript_text: str, user_text: str = "") -> PromptPair:
+    """Prompt for the short who-is-who / who-is-speaking pre-pass (frames + ASR)."""
+    t = (transcript_text or "").strip() or "(no speech detected)"
+    if user_text:
+        t = f"{t}\n\nADDITIONAL CONTEXT:\n{user_text}"
+    return _render_pair("identify_subjects", None, {"transcript": t})
 
 
 def build_canonicalize_entities_prompt(quints: List[Quintuple]) -> PromptPair:

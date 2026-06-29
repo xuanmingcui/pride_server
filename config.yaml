@@ -4,9 +4,15 @@
 
 model:
   name: "Qwen/Qwen3-VL-4B-Instruct-FP8"
+  # Supported vision-language models (set `name` to one of these):
+  #   Qwen/Qwen3-VL-4B-Instruct-FP8   (default)
+  #   Qwen/Qwen3.5-4B                 (Qwen3_5ForConditionalGeneration; thinking off by default)
   backend: "vllm"           # vllm | transformers
   device: "cuda"            # cuda | cpu | auto
   dtype: "auto"             # auto | fp16 | bf16
+  enable_thinking: false    # Qwen3 / Qwen3.5 "thinking" mode. Off by default — scene-graph
+                            # extraction wants direct structured output, not chain-of-thought.
+                            # Passed to processor.apply_chat_template(enable_thinking=...).
   max_new_tokens: 4096
   temperature: 0.2           # low temp for grounded structured extraction (high temp fabricates
                              # nonsensical / cross-shot triplets, e.g. "aircraft speaks to man")
@@ -22,7 +28,7 @@ whisper:
   vad_filter: true          # voice-activity detection (reduces hallucinations)
 
 scenegraph:
-  fps: 1.0                  # target frame sampling rate (frames per second). Per MLLM call we
+  fps: 0.5                  # target frame sampling rate (frames per second). Per MLLM call we
                             # sample ceil(window_seconds * fps) frames, floored to min_frames and
                             # capped by the context-budget cap below.
   min_frames: 4             # never sample fewer than this from any window (short ASR segments
@@ -58,6 +64,7 @@ paths:
   db_dir: "./data/db"       # ChromaDB persistent storage
   tmp_dir: "./tmp"          # temporary downloaded media
   output_dir: "./output"    # overlay videos / generated files
+  video_index_dir: "./data/video_index"   # scene-graph video index (rows, registry, stored media)
 
 discord:
   max_upload_mb: 10         # Discord free-tier bot upload limit

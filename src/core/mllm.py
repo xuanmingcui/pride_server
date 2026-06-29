@@ -97,6 +97,7 @@ class VLLMBackend(BaseMLLM):
         temperature: float = 0.8,
         tensor_parallel_size: int = 1,
         max_model_len: int = 32768,
+        enable_thinking: bool = False,
     ):
         from vllm import LLM, SamplingParams
         from transformers import AutoProcessor
@@ -104,6 +105,8 @@ class VLLMBackend(BaseMLLM):
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
+        # Qwen3 / Qwen3.5 "thinking" toggle, forwarded to apply_chat_template.
+        self.enable_thinking = enable_thinking
         self.SamplingParams = SamplingParams
 
         self.llm = LLM(
@@ -141,7 +144,8 @@ class VLLMBackend(BaseMLLM):
             {"role": "user", "content": user_content},
         ]
         prompt_str = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+            messages, tokenize=False, add_generation_prompt=True,
+            enable_thinking=self.enable_thinking,
         )
 
         if frames:
@@ -267,6 +271,7 @@ class TransformersVLBackend(BaseMLLM):
         dtype: str = "auto",
         max_new_tokens: int = 2048,
         temperature: float = 0.8,
+        enable_thinking: bool = False,
     ):
         import torch
         from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
@@ -274,6 +279,7 @@ class TransformersVLBackend(BaseMLLM):
         self.torch = torch
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
+        self.enable_thinking = enable_thinking
 
         # Resolve device_map: pin to an explicit device rather than "auto" so
         # that the MLLM does not silently spread across GPUs intended for other
@@ -292,7 +298,15 @@ class TransformersVLBackend(BaseMLLM):
 
         self.processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
         torch_dtype = "auto" if dtype == "auto" else getattr(torch, dtype, torch.float16)
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        # Use the generic image-text-to-text auto class so newer architectures
+        # (e.g. Qwen3.5's Qwen3_5ForConditionalGeneration) load without a
+        # hardcoded class; fall back to the Qwen2.5-VL class on older transformers.
+        try:
+            from transformers import AutoModelForImageTextToText
+            model_cls = AutoModelForImageTextToText
+        except Exception:
+            model_cls = Qwen2_5_VLForConditionalGeneration
+        self.model = model_cls.from_pretrained(
             model_name,
             torch_dtype=torch_dtype,
             device_map=device_map,
@@ -327,7 +341,8 @@ class TransformersVLBackend(BaseMLLM):
         ]
 
         text_input = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+            messages, tokenize=False, add_generation_prompt=True,
+            enable_thinking=self.enable_thinking,
         )
         image_inputs, video_inputs = process_vision_info(messages)
         inputs = self.processor(
@@ -401,6 +416,7 @@ def get_backend(config: Dict[str, Any]) -> BaseMLLM:
             "model_name":     model_name,
             "max_new_tokens": config.get("max_new_tokens", 2048),
             "temperature":    config.get("temperature", 0.8),
+            "enable_thinking": config.get("enable_thinking", False),
         }
         if backend_type == "vllm":
             _backend_instance = VLLMBackend(

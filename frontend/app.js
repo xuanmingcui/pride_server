@@ -61,9 +61,12 @@ async function pollTask(taskId, onStatus, basePath = '/api/tasks') {
     const r = await fetch(`${basePath}/${taskId}`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
-    if (data.status === 'done') return data.result;
+    if (data.status === 'done') {
+      if (onStatus) onStatus(data.status, data.progress);  // push final all-done progress
+      return data.result;
+    }
     if (data.status === 'error') throw new Error(data.error || 'Task failed');
-    if (onStatus) onStatus(data.status);
+    if (onStatus) onStatus(data.status, data.progress);
     await new Promise(res => setTimeout(res, 2000));
   }
 }
@@ -77,6 +80,7 @@ $$('.tab-btn').forEach(btn => {
     $(`#tab-${btn.dataset.tab}`).classList.add('active');
     if (btn.dataset.tab === 'validate') loadDatabasesIntoSelect('#val-database');
     if (btn.dataset.tab === 'misinfo') loadDatabasesIntoSelect('#mi-database');
+    if (btn.dataset.tab === 'video') loadVideoLibrary();
     if (btn.dataset.tab === 'databases') refreshDatabaseSelector();
   });
 });
@@ -112,6 +116,7 @@ function showFileName(el, name) {
 setupUploadZone('sg-upload-zone', 'sg-file', 'sg-filename');
 setupUploadZone('val-upload-zone', 'val-file', 'val-filename');
 setupUploadZone('db-file-zone', 'db-facts-file', 'db-file-name');
+setupUploadZone('vl-upload-zone', 'vl-file', 'vl-filename');
 
 /* ══════════════════════════════════════════════════════════════════
    SCENE GRAPH
@@ -130,6 +135,7 @@ $('#sg-submit').addEventListener('click', async () => {
   const btn = $('#sg-submit');
   btn.disabled = true;
   setStatus('sg', 'Submitting…');
+  sgRenderStages(null);             // clear any checklist from a previous run
   $('#sg-copy-btn').style.display = 'none';
   $('#sg-download-btn').style.display = 'none';
   $('#sg-normalize-btn').style.display = 'none';
@@ -188,17 +194,58 @@ $('#sg-submit').addEventListener('click', async () => {
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || 'Submission failed');
 
-    setStatus('sg', 'Processing (this may take a minute)…');
-    const result = await pollTask(j.task_id, s => setStatus('sg', `Status: ${s}…`));
-    setStatus('sg', null);
+    setStatus('sg', 'Status: running');
+    const result = await pollTask(j.task_id, (s, prog) => sgProgress(prog, s));
+    setStatus('sg', 'Succeeded', 'success');  // keep the completed checklist visible
     if (normalizePre) result.normalized = true;
     renderSceneGraph(result, j.task_id);
   } catch (err) {
+    sgRenderStages(null);
     setStatus('sg', err.message, 'error');
   } finally {
     btn.disabled = false;
   }
 });
+
+/** Update the status line + per-stage checklist from a task's progress dict. */
+function sgProgress(prog, status) {
+  const stages = prog && Array.isArray(prog.stages) ? prog.stages : null;
+  setStatus('sg', `Status: ${status || 'running'}`);
+  sgRenderStages(stages);
+}
+
+/** Render the multi-stage checklist (tqdm-style bars). Pass null to hide. */
+function sgRenderStages(stages) {
+  const box = $('#sg-stages');
+  if (!box) return;
+  if (!stages || !stages.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = '';
+  box.innerHTML = stages.map(s => {
+    const state = s.state || 'pending';
+    const pct = Math.round(s.percent || 0);
+    const determinate = !!s.determinate;
+    // Determinate running → show width; atomic running → animated indeterminate bar.
+    const trackCls = (state === 'running' && !determinate) ? 'stage-track indet' : 'stage-track';
+    const fillStyle = state === 'done'
+      ? ''                                            // CSS forces 100%
+      : (determinate && state === 'running') ? `width:${pct}%` : '';
+    const right = state === 'done' ? 'done'
+      : state === 'running' ? (determinate ? `${pct}%` : '…')
+      : '';
+    const detail = (state === 'running' && s.detail) ? ` — ${escapeHtml(s.detail)}` : '';
+    return `<div class="stage-row ${state}">
+      <span class="stage-name" title="${escapeHtml(s.label || s.key)}">${escapeHtml(s.label || s.key)}${detail}</span>
+      <div class="${trackCls}"><div class="stage-fill" style="${fillStyle}"></div></div>
+      <span class="stage-state">${right}</span>
+    </div>`;
+  }).join('');
+}
+
+function escapeHtml(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
 function renderSceneGraph(result, taskId) {
   _sgLastResult = result;
@@ -225,6 +272,15 @@ function renderSceneGraph(result, taskId) {
   const firstItem = segments.find(s => (s.triplets || []).length)?.triplets?.[0];
   const hasTimes  = !!(firstItem && firstItem.start_sec != null);
   const unit = hasTimes ? 'quintuple' : 'triplet';
+
+  // "Add to Library" applies to video scene graphs (temporal/quintuple output)
+  // while the source video file is still loaded in the upload zone.
+  const addLibBtn = $('#sg-addlib-btn');
+  const sgFile = $('#sg-file').files[0];
+  const canAddLib = !isRaw && hasTimes && total > 0 && !!sgFile;
+  addLibBtn.style.display = canAddLib ? '' : 'none';
+  addLibBtn.disabled = false;
+  addLibBtn.textContent = '+ Add to Library';
 
   // Summary chips
   const chips = document.createElement('div');
@@ -384,6 +440,37 @@ $('#sg-normalize-btn').addEventListener('click', async () => {
     setStatus('sg', err.message, 'error');
     btn.disabled = false;
     btn.textContent = 'Refine results';
+  }
+});
+
+// Index the just-generated video scene graph into the Video Library, reusing
+// the file still loaded in the Scene Graph upload zone (no re-generation).
+$('#sg-addlib-btn').addEventListener('click', async () => {
+  const file = $('#sg-file').files[0];
+  if (!file || !_sgLastResult || !_sgLastResult.segments) {
+    toast('No video scene graph to add.', 'error');
+    return;
+  }
+  const btn = $('#sg-addlib-btn');
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+  setStatus('sg', 'Indexing into Video Library…');
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('title', file.name);
+    fd.append('segments', JSON.stringify({ segments: _sgLastResult.segments }));
+    const r = await fetch('/api/videos/index', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Submission failed');
+    const rec = await pollTask(j.task_id, s => setStatus('sg', `Status: ${s}…`));
+    setStatus('sg', null);
+    toast(`Added to Library: "${rec.title}" (${rec.num_rows} rows).`, 'success');
+    btn.textContent = '✓ Added';
+  } catch (err) {
+    setStatus('sg', err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = '+ Add to Library';
   }
 });
 
@@ -1004,6 +1091,200 @@ $('#val-prompt-reset').addEventListener('click', async () => {
     toast('Error: ' + e.message, 'error');
   }
 });
+
+/* ══════════════════════════════════════════════════════════════════
+   VIDEO LIBRARY
+══════════════════════════════════════════════════════════════════ */
+
+// Index a new video (upload → generate scene graph → index).
+$('#vl-index-btn').addEventListener('click', async () => {
+  const file = $('#vl-file').files[0];
+  if (!file) { toast('Choose a video to index.', 'error'); return; }
+
+  const btn = $('#vl-index-btn');
+  btn.disabled = true;
+  setStatus('vl-index', 'Submitting…');
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const title = $('#vl-title').value.trim();
+    if (title) fd.append('title', title);
+    fd.append('mode', document.querySelector('input[name="vl-mode"]:checked').value);
+    fd.append('normalize', $('#vl-normalize').checked ? 'true' : 'false');
+
+    const r = await fetch('/api/videos/index', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Submission failed');
+
+    setStatus('vl-index', 'Generating scene graph & indexing (this may take a minute)…');
+    const rec = await pollTask(j.task_id, s => setStatus('vl-index', `Status: ${s}…`));
+    setStatus('vl-index', `Indexed "${rec.title}" — ${rec.num_rows} rows.`, 'success');
+    toast(`Indexed "${rec.title}".`, 'success');
+
+    // Reset the form and refresh the library list.
+    $('#vl-file').value = '';
+    $('#vl-filename').textContent = '';
+    $('#vl-filename').classList.remove('visible');
+    $('#vl-title').value = '';
+    loadVideoLibrary();
+  } catch (e) {
+    setStatus('vl-index', e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Search the library.
+async function runVideoSearch() {
+  const query = $('#vl-query').value.trim();
+  if (!query) { toast('Enter a search query.', 'error'); return; }
+  const btn = $('#vl-search-btn');
+  btn.disabled = true;
+  setStatus('vl-search', 'Searching…');
+  $('#vl-results').innerHTML = '';
+  try {
+    const body = { query };
+    const topk = $('#vl-topk').value;
+    if (topk) body.top_k = Math.max(1, Math.floor(Number(topk)));
+    const facet = $('#vl-facet').value;
+    if (facet) body.facet = facet;
+    const keyword = $('#vl-keyword').value.trim();
+    if (keyword) body.keyword = keyword;
+    const minscore = $('#vl-minscore').value;
+    if (minscore !== '') body.min_score = Math.max(0, Math.min(1, Number(minscore)));
+    const r = await fetch('/api/videos/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Search failed');
+    setStatus('vl-search', null);
+    renderVideoResults(j.results || []);
+  } catch (e) {
+    setStatus('vl-search', e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+$('#vl-search-btn').addEventListener('click', runVideoSearch);
+$('#vl-query').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runVideoSearch();
+});
+
+function renderVideoResults(results) {
+  const container = $('#vl-results');
+  container.innerHTML = '';
+  if (!results.length) {
+    container.innerHTML = '<div class="empty"><p>No matching videos.</p></div>';
+    return;
+  }
+
+  const chips = document.createElement('div');
+  chips.className = 'chips';
+  chips.innerHTML = `<span class="chip"><strong>${results.length}</strong> video${results.length !== 1 ? 's' : ''}</span>`;
+  container.appendChild(chips);
+
+  results.forEach(v => {
+    const card = document.createElement('div');
+    card.className = 'video-result';
+
+    const head = document.createElement('div');
+    head.className = 'video-result-head';
+    head.innerHTML =
+      `<span class="video-result-title">${esc(v.title)}</span>` +
+      `<span class="video-result-score">score ${v.score.toFixed(2)} · ${v.num_matches} match${v.num_matches !== 1 ? 'es' : ''}</span>`;
+    card.appendChild(head);
+
+    // Player (if media was stored).
+    let player = null;
+    if (v.has_media) {
+      const wrap = document.createElement('div');
+      wrap.className = 'overlay-wrap';
+      player = document.createElement('video');
+      player.controls = true;
+      player.preload = 'metadata';
+      player.src = `/api/videos/${encodeURIComponent(v.id)}/media`;
+      wrap.appendChild(player);
+      card.appendChild(wrap);
+    }
+
+    // Matching moments — clicking one seeks the player.
+    const matches = document.createElement('div');
+    matches.className = 'video-matches';
+    v.matches.forEach(m => {
+      const row = document.createElement('div');
+      const hasTime = m.start_sec != null;
+      row.className = 'video-match' + (hasTime && player ? ' seekable' : '');
+      const timeStr = hasTime ? fmtTimeRange(m.start_sec, m.end_sec) : '';
+      const facetTags = (m.facets || [])
+        .map(f => `<span class="facet-tag">${esc(f)}</span>`).join('');
+      row.innerHTML =
+        `<span class="triplet-subj">${esc(m.subject)}</span>` +
+        `<span class="triplet-rel">→ ${esc(m.relation)} →</span>` +
+        `<span class="triplet-obj">${esc(m.object)}</span>` +
+        facetTags +
+        (timeStr ? `<span class="triplet-time">${esc(timeStr)}</span>` : '');
+      if (hasTime && player) {
+        row.title = 'Jump to this moment';
+        row.addEventListener('click', () => {
+          player.currentTime = Math.max(0, m.start_sec);
+          player.play().catch(() => {});
+          player.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        });
+      }
+      matches.appendChild(row);
+    });
+    card.appendChild(matches);
+    container.appendChild(card);
+  });
+}
+
+// Library list (browse + delete).
+async function loadVideoLibrary() {
+  const list = $('#vl-library-list');
+  try {
+    const r = await fetch('/api/videos');
+    const j = await r.json();
+    const videos = j.videos || [];
+    $('#vl-lib-count').textContent = videos.length;
+    if (!videos.length) {
+      list.innerHTML = '<div class="empty"><p>No videos indexed yet.</p></div>';
+      return;
+    }
+    list.innerHTML = '';
+    videos.forEach(v => {
+      const row = document.createElement('div');
+      row.className = 'library-item';
+      const dur = v.duration != null ? ` · ${fmt(v.duration)}` : '';
+      row.innerHTML =
+        `<div class="library-item-info">` +
+        `<span class="library-item-title">${esc(v.title)}</span>` +
+        `<span class="library-item-meta">${v.num_rows} rows${dur}</span>` +
+        `</div>`;
+      const del = document.createElement('button');
+      del.className = 'btn btn-danger btn-sm';
+      del.textContent = 'Delete';
+      del.addEventListener('click', async () => {
+        if (!confirm(`Delete "${v.title}" from the library?`)) return;
+        try {
+          const dr = await fetch(`/api/videos/${encodeURIComponent(v.id)}`, { method: 'DELETE' });
+          if (!dr.ok) throw new Error((await dr.json()).error || 'Delete failed');
+          toast('Video deleted.', 'success');
+          loadVideoLibrary();
+        } catch (e) {
+          toast('Error: ' + e.message, 'error');
+        }
+      });
+      row.appendChild(del);
+      list.appendChild(row);
+    });
+  } catch (e) {
+    list.innerHTML = `<div class="empty"><p style="color:var(--error)">${esc(e.message)}</p></div>`;
+  }
+}
+
+$('#vl-refresh-btn').addEventListener('click', loadVideoLibrary);
 
 /* ── Bootstrap ──────────────────────────────────────────────────── */
 initPromptCache().then(() => {

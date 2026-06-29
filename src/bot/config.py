@@ -21,6 +21,7 @@ _DEFAULTS: Dict[str, Any] = {
         "dtype":               "auto",
         "max_new_tokens":      2048,
         "temperature":         0.8,
+        "enable_thinking":     False,
         "tensor_parallel_size": 1,
     },
     "whisper": {
@@ -85,6 +86,7 @@ def load_config(path: str = "config.yaml") -> Dict[str, Any]:
         "PRIDE_DEVICE":             ("model", "device"),
         "PRIDE_MAX_NEW_TOKENS":     ("model", "max_new_tokens"),
         "PRIDE_TEMPERATURE":        ("model", "temperature"),
+        "PRIDE_ENABLE_THINKING":    ("model", "enable_thinking"),
         "PRIDE_TENSOR_PARALLEL_SIZE": ("model", "tensor_parallel_size"),
         "PRIDE_WHISPER_MODEL":        ("whisper", "model_size"),
         "PRIDE_WHISPER_LANGUAGE":   ("whisper", "language"),
@@ -96,9 +98,12 @@ def load_config(path: str = "config.yaml") -> Dict[str, Any]:
     for env_key, (section, field) in env_map.items():
         val = os.environ.get(env_key)
         if val is not None:
-            # Coerce to int/float when the default is numeric
+            # Coerce to the default's type. bool MUST be checked before int
+            # because bool is a subclass of int in Python.
             default_val = _DEFAULTS.get(section, {}).get(field)
-            if isinstance(default_val, int):
+            if isinstance(default_val, bool):
+                val = val.strip().lower() in ("1", "true", "yes", "on")
+            elif isinstance(default_val, int):
                 val = int(val)
             elif isinstance(default_val, float):
                 val = float(val)

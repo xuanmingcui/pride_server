@@ -7,6 +7,8 @@ Results are retained for TTL_SECONDS after completion, then cleaned up.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import functools
 import logging
 import os
 import time
@@ -27,6 +29,10 @@ class TaskInfo:
     result: Any = None
     error: str = ""
     created_at: float = field(default_factory=time.time)
+    # {percent: 0-100 float, stage: short label, detail: optional extra text}
+    progress: Dict[str, Any] = field(
+        default_factory=lambda: {"percent": 0.0, "stage": "queued", "detail": "", "stages": []}
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -34,7 +40,20 @@ class TaskInfo:
             "status": self.status,
             "result": self.result if self.status == "done" else None,
             "error": self.error,
+            "progress": self.progress,
         }
+
+
+def _accepts_report(fn: Callable) -> bool:
+    """True if ``fn`` takes at least one positional parameter (the reporter)."""
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL)
+        for p in params
+    )
 
 
 class TaskQueue:
@@ -66,9 +85,34 @@ class TaskQueue:
             task_id, fn = await self._queue.get()
             info = self._tasks[task_id]
             info.status = "running"
+            info.progress = {"percent": 1.0, "stage": "starting", "detail": ""}
+
+            def report(percent: Optional[float] = None,
+                       stage: Optional[str] = None,
+                       detail: Optional[str] = None,
+                       stages: Optional[Any] = None) -> None:
+                # Called from the worker thread; plain dict writes are fine here.
+                if percent is not None:
+                    info.progress["percent"] = max(0.0, min(100.0, float(percent)))
+                if stage is not None:
+                    info.progress["stage"] = stage
+                if detail is not None:
+                    info.progress["detail"] = detail
+                if stages is not None:
+                    info.progress["stages"] = stages
+
+            call = functools.partial(fn, report) if _accepts_report(fn) else fn
             try:
-                info.result = await loop.run_in_executor(self._executor, fn)
+                info.result = await loop.run_in_executor(self._executor, call)
                 info.status = "done"
+                # Preserve the stage list (mark every stage complete) so the UI
+                # shows the finished checklist rather than a blank bar.
+                done_stages = info.progress.get("stages") or []
+                for s in done_stages:
+                    s["state"] = "done"
+                    s["percent"] = 100.0
+                info.progress = {"percent": 100.0, "stage": "done",
+                                 "detail": "", "stages": done_stages}
                 log.info("Task %s done.", task_id)
             except Exception as exc:
                 import traceback

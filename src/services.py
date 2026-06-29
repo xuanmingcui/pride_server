@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from src.core.embedder import MultimodalEmbedder
     from src.core.scenegraph import SceneGraphPipeline
     from src.core.prompts import PromptStore
+    from src.core.video_index import VideoIndex
     from src.validation.database import FactDatabase
     from src.validation.pipeline import ValidationPipeline
 
@@ -34,6 +35,7 @@ class ModelServices:
     db: "FactDatabase"
     val_pipeline: "ValidationPipeline"
     prompt_store: "PromptStore"
+    video_index: "VideoIndex"
 
     @classmethod
     async def create(cls, cfg: Dict[str, Any]) -> "ModelServices":
@@ -43,6 +45,7 @@ class ModelServices:
         from src.core.embedder import get_embedder
         from src.core.prompts import init_store
         from src.core.scenegraph import SceneGraphPipeline
+        from src.core.video_index import VideoIndex
         from src.validation.database import FactDatabase
         from src.validation.pipeline import ValidationPipeline
 
@@ -83,6 +86,12 @@ class ModelServices:
         prompt_store = init_store(paths["db_dir"])
 
         db = FactDatabase(db_path=paths["db_dir"], embedder=embedder)
+
+        import os
+        video_index_dir = paths.get(
+            "video_index_dir", os.path.join(paths["db_dir"], "video_index")
+        )
+        video_index = VideoIndex(index_path=video_index_dir, embedder=embedder)
         val_pipeline = ValidationPipeline(
             backend=backend,
             db=db,
@@ -102,6 +111,7 @@ class ModelServices:
             db=db,
             val_pipeline=val_pipeline,
             prompt_store=prompt_store,
+            video_index=video_index,
         )
 
     async def run_in_thread(self, fn, *args, **kwargs):

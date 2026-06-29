@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import tempfile
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +31,7 @@ from .triplets import (
     Triplet,
     apply_entity_map,
     build_canonicalize_entities_prompt,
+    build_identify_subjects_prompt,
     build_normalize_prompt,
     build_normalize_quintuples_prompt,
     drop_ungrounded_rows,
@@ -53,6 +55,101 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff"}
 # single windowed extraction call — otherwise the output truncates and the
 # truncation guard discards the refinement, leaving duplicates un-merged.
 _NORMALIZE_MAX_TOKENS = 8192
+
+# Extraction is chunked so the progress bar can report windows-done/total.
+# Each chunk is one batched vLLM call; these keep batching reasonable while
+# still giving several progress updates.
+_EXTRACT_TARGET_UPDATES = 6   # aim for ~this many progress ticks
+_EXTRACT_MIN_CHUNK = 4        # but never batch fewer than this per call
+
+# Generic "speaker" placeholders that should be rewritten to the identified
+# attribution target (e.g. "Elon Musk") when one is known for the clip.
+_GENERIC_SPEAKER_SUBJECTS = {
+    "narrator", "narrative", "speaker", "the speaker", "voiceover", "voice-over",
+    "voice over", "voice", "author", "the narrator", "the author", "the video",
+    "video", "the clip", "clip", "announcer", "the announcer", "the speaker in the video",
+}
+
+
+def _parse_attribute_to(identity_text: str) -> str:
+    """Extract the designated claim-attribution name from the identity note.
+
+    Returns "" when the note designates a generic narrator / no identifiable
+    presenter, so callers fall back to whatever the model produced.
+    """
+    if not identity_text:
+        return ""
+    m = re.search(r"ATTRIBUTE[_ ]?TO\s*:\s*(.+)", identity_text, re.IGNORECASE)
+    if not m:
+        return ""
+    name = m.group(1).strip()
+    # The note is collapsed to one line, so cut at the next section label if present.
+    name = re.split(r"\b(?:VIDEO|SPEAKER|VISIBLE)\s*:", name)[0]
+    name = name.strip().strip('".\'').strip()
+    if not name or name.lower() in _GENERIC_SPEAKER_SUBJECTS or len(name) > 60:
+        return ""
+    return name
+
+
+class _StageProgress:
+    """Tracks a list of named pipeline stages and pushes structured updates.
+
+    Each stage is ``{key, label, determinate, state, percent, detail}`` where
+    ``state`` is pending | running | done. ``determinate`` stages report a real
+    percent (e.g. windows processed / total); others animate on the client while
+    running. The bound callback receives ``(overall, label, detail, stages)``.
+    """
+
+    def __init__(self, cb: Optional[Any], plan):
+        self._cb = cb
+        self.stages = [
+            {"key": k, "label": l, "determinate": d,
+             "state": "pending", "percent": 0.0, "detail": ""}
+            for (k, l, d) in plan
+        ]
+
+    def _find(self, key: str):
+        return next((s for s in self.stages if s["key"] == key), None)
+
+    def _overall(self) -> float:
+        return sum(s["percent"] for s in self.stages) / len(self.stages) if self.stages else 0.0
+
+    def _emit(self) -> None:
+        if not self._cb:
+            return
+        cur = next((s for s in self.stages if s["state"] == "running"), None)
+        label = cur["label"] if cur else (self.stages[-1]["label"] if self.stages else "")
+        detail = cur["detail"] if cur else ""
+        try:
+            self._cb(self._overall(), label, detail, [dict(s) for s in self.stages])
+        except Exception:
+            pass
+
+    def start(self, key: str, detail: str = "") -> None:
+        s = self._find(key)
+        if s:
+            s["state"] = "running"
+            s["percent"] = max(s["percent"], 3.0)
+            s["detail"] = detail
+        self._emit()
+
+    def set(self, key: str, percent: float, detail: str = "") -> None:
+        s = self._find(key)
+        if s and s["state"] != "done":
+            s["state"] = "running"
+            s["percent"] = max(0.0, min(99.0, percent))
+            if detail:
+                s["detail"] = detail
+        self._emit()
+
+    def done(self, key: str, detail: str = "") -> None:
+        s = self._find(key)
+        if s:
+            s["state"] = "done"
+            s["percent"] = 100.0
+            if detail:
+                s["detail"] = detail
+        self._emit()
 
 
 def _looks_complete_list(text: str) -> bool:
@@ -210,6 +307,7 @@ class SceneGraphPipeline:
         prompt_override: Optional[Dict[str, str]] = None,
         raw_output: bool = False,
         normalize: Optional[bool] = None,
+        progress_cb: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Generate scene graph from any combination of media + text.
 
@@ -242,14 +340,39 @@ class SceneGraphPipeline:
         log.info("=== SceneGraph request | media=%s text_len=%d output=%s fps=%.3f mode=%s normalize=%s ===",
                  media_name, len(text), output_type, eff_fps, mode, self._normalize_now)
 
-        if media_path is None:
-            result = self._text_only(text, temperature, mode, prompt_override, raw_output)
-        elif self._is_image(media_path):
-            result = self._image(media_path, text, temperature, mode, prompt_override, raw_output)
+        # Build the progress stage plan: (key, label, determinate).
+        is_image = bool(media_path) and self._is_image(media_path)
+        is_video = bool(media_path) and not is_image
+        plan = []
+        if is_video:
+            plan.append(("audio", "Processing audio", False))
+            if not raw_output:
+                plan.append(("identity", "Identity pass", False))
+            plan.append(("extract", "Generating scene graphs", not raw_output))
+            if not raw_output:
+                plan.append(("transcript", "Extracting from transcript", False))
+            if self._normalize_now and mode == "high" and not raw_output:
+                plan.append(("refine", "Running normalization", False))
         else:
-            result = self._video(media_path, text, temperature, eff_fps, mode, prompt_override, raw_output)
+            plan.append(("extract", "Analyzing", False))
+        if output_type == "overlay" and output_path and media_path:
+            plan.append(("overlay", "Rendering overlay", False))
+        prog = _StageProgress(progress_cb, plan)
+
+        if media_path is None:
+            prog.start("extract")
+            result = self._text_only(text, temperature, mode, prompt_override, raw_output)
+            prog.done("extract")
+        elif is_image:
+            prog.start("extract")
+            result = self._image(media_path, text, temperature, mode, prompt_override, raw_output)
+            prog.done("extract")
+        else:
+            result = self._video(media_path, text, temperature, eff_fps, mode, prompt_override,
+                                 raw_output, prog)
 
         if output_type == "overlay" and output_path and media_path:
+            prog.start("overlay")
             log.info("Rendering overlay → %s …", os.path.basename(output_path))
             try:
                 self._create_overlay(media_path, result, output_path)
@@ -258,6 +381,7 @@ class SceneGraphPipeline:
             except Exception as e:
                 log.warning("Overlay failed: %s", e)
                 result["overlay_error"] = str(e)
+            prog.done("overlay")
         else:
             result["overlay_path"] = None
 
@@ -305,27 +429,69 @@ class SceneGraphPipeline:
     def _video(
         self, video_path: str, text: str, temperature: Optional[float], fps: float, mode: str,
         prompt_override: Optional[Dict[str, str]] = None, raw_output: bool = False,
+        progress: Optional[Any] = None,
     ) -> Dict[str, Any]:
+        prog: Optional[_StageProgress] = progress
         duration = _video_duration(video_path)
         log.info("Video: %.1fs duration, user text: %d chars.", duration, len(text))
         user_text = text          # preserved verbatim for every prompt call
         transcript_text = ""
         asr_segments: List[Dict] = []
 
+        if prog:
+            prog.start("audio")
         try:
             result = transcribe_video(video_path, self.whisper, self.tmp_dir)
             asr_segments = result.get("segments", [])
             full_text = get_full_text(asr_segments)
             log.info("Transcript: %d ASR segment(s), %d chars.", len(asr_segments), len(full_text))
             transcript_text = full_text
+            if prog:
+                prog.done("audio", f"{len(asr_segments)} segment(s)" if asr_segments
+                          else "no speech detected")
         except Exception as e:
             log.warning("Audio transcription skipped: %s", e)
+            if prog:
+                prog.done("audio", "skipped (no audio)")
 
         if raw_output:
             # Skip segmentation entirely — one call over the whole video
             log.info("Raw output mode: bypassing segmentation, processing as single clip.")
-            return self._video_whole(video_path, transcript_text, user_text, temperature, fps,
-                                     mode, prompt_override, raw_output)
+            if prog:
+                prog.start("extract")
+            res = self._video_whole(video_path, transcript_text, user_text, temperature, fps,
+                                    mode, prompt_override, raw_output)
+            if prog:
+                prog.done("extract")
+            return res
+
+        # Identity pre-pass: when there is speech, identify who is on screen and
+        # who is speaking so spoken claims get attributed to the named person
+        # (e.g. "Elon Musk claims …") rather than a generic "speaker". The note
+        # is injected as context into every window's extraction prompt.
+        # Identity + summary pre-pass (always for video): a short overall summary
+        # of the clip (visuals + transcript + provided text) plus who is on screen
+        # and who is speaking. Injected as shared context into every window.
+        context = user_text
+        speaker_name = ""
+        if prog:
+            prog.start("identity")
+        identity = self._identify_subjects(
+            video_path, duration, transcript_text, user_text, temperature,
+        )
+        if identity:
+            log.info("Identity/summary note: %s", identity[:200])
+            speaker_name = _parse_attribute_to(identity)
+            if speaker_name:
+                log.info("Spoken claims will be attributed to: %s", speaker_name)
+            context = (
+                "VIDEO CONTEXT (overall summary + who-is-who, identified from the WHOLE "
+                "video; use this to interpret this segment, use these names, and attribute "
+                f"spoken claims accordingly):\n{identity}"
+                + (f"\n\n{user_text}" if user_text else "")
+            )
+        if prog:
+            prog.done("identity", speaker_name or ("summarized" if identity else ""))
 
         # Unified windowed extraction: split the clip into short windows and run
         # one dense, temporally-grounded call per window (batched). Per-window
@@ -333,8 +499,8 @@ class SceneGraphPipeline:
         # subsumes the old ASR-segment / whole-clip / temporal-split branches and
         # is the main driver of triplet density + fine-grained temporal grounding.
         return self._video_windowed(
-            video_path, duration, asr_segments, transcript_text, user_text,
-            temperature, fps, mode, prompt_override,
+            video_path, duration, asr_segments, transcript_text, context,
+            temperature, fps, mode, prompt_override, prog, speaker_name,
         )
 
     # ------------------------------------------------------------------
@@ -356,6 +522,100 @@ class SceneGraphPipeline:
             max_duration_ctx = max_frames_ctx / fps
         """
         return self._max_frames_per_call() / max(fps, 1e-6)
+
+    def _identify_subjects(
+        self, video_path: str, duration: float, transcript_text: str,
+        user_text: str, temperature: Optional[float],
+    ) -> str:
+        """Short who-is-who / who-is-speaking note from frames + transcript.
+
+        One multimodal call over ~10 frames sampled across the whole clip. Kept
+        short on purpose (low max_tokens) since Qwen3-VL tends to over-explain.
+        Returns "" on any failure so the caller falls back to no identity note.
+        """
+        frames, eff_fps = sample_frames(
+            video_path, fps=0.01, start_sec=0.0, end_sec=duration,
+            min_frames=10, max_frames=12,
+        )
+        if not frames:
+            return ""
+        pair = build_identify_subjects_prompt(transcript_text, user_text)
+        try:
+            text = self.backend.generate_raw(
+                pair["user"], frames=frames, fps=eff_fps,
+                max_tokens=400, system_prompt=pair["system"],
+            )
+        except Exception as e:
+            log.warning("Identity pre-pass failed: %s", e)
+            return ""
+        return " ".join((text or "").split())[:1400]
+
+    @staticmethod
+    def _attribute_speaker(quints: List[Quintuple], speaker_name: str) -> List[Quintuple]:
+        """Rewrite generic narrator/speaker subjects to the identified figure."""
+        if not speaker_name:
+            return quints
+        out: List[Quintuple] = []
+        for s, r, o, t0, t1 in quints:
+            if s.strip().lower() in _GENERIC_SPEAKER_SUBJECTS:
+                s = speaker_name
+            out.append((s, r, o, t0, t1))
+        return out
+
+    def _extract_asr_claims(
+        self, asr_segments: List[Dict], context: str, mode: str,
+        temperature: Optional[float], progress: Optional["_StageProgress"] = None,
+        speaker_name: str = "",
+    ) -> List[Quintuple]:
+        """Extract scene-graph triplets directly from the ASR transcript.
+
+        Runs the text-only extractor on EACH ASR segment (batched), so spoken
+        claims are captured comprehensively and stamped with that segment's
+        timestamps — independent of whether the video model attended to the
+        audio. The identity/context note is prepended so claims are attributed
+        to the named speaker. Returns absolute-time quintuples.
+        """
+        reqs: List[Dict] = []
+        metas: List[tuple] = []
+        for seg in asr_segments:
+            txt = (seg.get("text") or "").strip()
+            if not txt:
+                continue
+            parts = []
+            if context:
+                parts.append(context)
+            if speaker_name:
+                attribution = (
+                    f'Use exactly "{speaker_name}" as the SUBJECT of every spoken claim / '
+                    f'assertion below (the video presents {speaker_name} as the speaker). '
+                    'Do NOT use "narrator", "speaker", or "narrative" as the subject.'
+                )
+            else:
+                attribution = ('Attribute every spoken claim to the identified speaker; '
+                               'if none is identifiable use "narrator".')
+            parts.append(f"{attribution}\n\nSPOKEN TRANSCRIPT:\n{txt}")
+            pair = build_text_only_scenegraph_prompt("\n\n".join(parts), mode=mode)
+            reqs.append({"prompt": pair["user"], "system_prompt": pair["system"],
+                         "frames": None, "fps": None})
+            metas.append((float(seg.get("start", 0.0)), float(seg.get("end", 0.0))))
+        if not reqs:
+            if progress:
+                progress.done("transcript", "no speech")
+            return []
+        n = len(reqs)
+        if progress:
+            progress.start("transcript", f"0/{n} segments")
+        raw_texts = self._run_batch_raw(reqs, temperature)
+        out: List[Quintuple] = []
+        for (s0, s1), text in zip(metas, raw_texts):
+            for s, r, o in validate_triplets(extract_triplets_from_text(text)):
+                out.append((s, r, o, s0, s1))
+        # Deterministic backstop in case the model still emitted a placeholder.
+        out = self._attribute_speaker(out, speaker_name)
+        if progress:
+            progress.done("transcript", f"{n} segment(s), {len(out)} claim(s)")
+        log.info("ASR claim extraction: %d segment(s) → %d triplet(s).", n, len(out))
+        return out
 
     @staticmethod
     def _asr_text_for_window(asr_segments: List[Dict], start: float, end: float) -> str:
@@ -381,6 +641,8 @@ class SceneGraphPipeline:
         fps: float,
         mode: str,
         prompt_override: Optional[Dict[str, str]] = None,
+        progress: Optional[Any] = None,
+        speaker_name: str = "",
     ) -> Dict[str, Any]:
         """Split the clip into short windows and densely extract each (batched).
 
@@ -409,6 +671,7 @@ class SceneGraphPipeline:
             len(boundaries), window, fps, duration, "yes" if asr_segments else "no",
         )
 
+        prog: Optional[_StageProgress] = progress
         max_per_call = self._max_frames_per_call()
         requests: List[Dict] = []
         seg_meta: List[Dict] = []
@@ -440,17 +703,35 @@ class SceneGraphPipeline:
             log.warning("No usable windows after frame sampling.")
             return {"triplets": [], "segments": [], "transcript": transcript_text}
 
-        log.info("Running MLLM batch: %d window(s) …", len(requests))
+        n_win = len(requests)
+        log.info("Running MLLM batch: %d window(s) …", n_win)
+        if prog:
+            prog.start("extract", f"0/{n_win} windows")
         # Generate per-window quintuples WITHOUT the in-line per-window normalize;
         # we run the refinement explicitly below so we can also do a light global
         # entity-rename pass for cross-window name consistency.
         want_normalize = self._normalize_now and mode == "high"
         prev_norm = self._normalize_now
         self._normalize_now = False
+        # Process windows in chunks so the progress bar can report real
+        # windows-done/total. Each chunk is still a single batched vLLM call;
+        # the chunk size keeps decent batching while giving ~several updates.
+        chunk = max(_EXTRACT_MIN_CHUNK, math.ceil(n_win / _EXTRACT_TARGET_UPDATES))
+        batch_results: List[List[Quintuple]] = []
         try:
-            batch_results = self._run_batch_quintuples(requests, temperature, mode, seg_durations)
+            for i in range(0, n_win, chunk):
+                creqs = requests[i:i + chunk]
+                cdurs = seg_durations[i:i + chunk]
+                batch_results.extend(
+                    self._run_batch_quintuples(creqs, temperature, mode, cdurs)
+                )
+                done = min(i + chunk, n_win)
+                if prog:
+                    prog.set("extract", 100.0 * done / n_win, f"{done}/{n_win} windows")
         finally:
             self._normalize_now = prev_norm
+        if prog:
+            prog.done("extract", f"{n_win}/{n_win} windows")
 
         # Shift each window to absolute time but KEEP the per-window structure —
         # refining/merging globally and re-bucketing by start time collapsed every
@@ -462,7 +743,35 @@ class SceneGraphPipeline:
             for meta, seg_dur, quints in zip(seg_meta, seg_durations, batch_results)
         ]
 
+        # Fuse in claims extracted directly from the ASR transcript. For high-level
+        # semantics the spoken track is the primary signal, so we extract it as its
+        # own modality (per ASR segment, timestamped) and bucket each claim into the
+        # window that contains its start time, then refine the combined graph.
+        if asr_segments:
+            asr_quints = self._extract_asr_claims(
+                asr_segments, user_text, mode, temperature, prog, speaker_name,
+            )
+            for q in asr_quints:
+                start_t = q[3]
+                idx = next(
+                    (i for i, m in enumerate(seg_meta) if m["start"] <= start_t < m["end"]),
+                    len(seg_meta) - 1,
+                )
+                seg_quints[idx].append(q)
+            seg_quints = [validate_quintuples(seg) for seg in seg_quints]
+        elif prog:
+            prog.done("transcript", "no speech")
+
+        # Deterministic backstop: rewrite generic "narrator"/"narrative"/"speaker"
+        # subjects to the identified figure (e.g. Elon Musk) so spoken claims are
+        # attributed even when the model defaulted to a placeholder. Runs across
+        # both video- and transcript-derived rows, before refinement unifies them.
+        if speaker_name:
+            seg_quints = [self._attribute_speaker(seg, speaker_name) for seg in seg_quints]
+
         if want_normalize:
+            if prog:
+                prog.start("refine", "refining triplets")
             # 1. Per-window refinement (batched, small lists → robust, no truncation):
             #    dedup, vague-variant unification, relation cleanup, type/quality
             #    filter, and high-mode low-level-trivia removal.
@@ -472,11 +781,15 @@ class SceneGraphPipeline:
             # 3. Light GLOBAL rename for cross-window consistency (map only — no
             #    span-merge, no re-bucketing) so a person named in one window is
             #    named the same way everywhere.
+            if prog:
+                prog.set("refine", 60.0, "unifying entity names")
             rename = self._entity_rename_map([q for seg in seg_quints for q in seg])
             if rename:
                 seg_quints = [
                     validate_quintuples(apply_entity_map(seg, rename)) for seg in seg_quints
                 ]
+            if prog:
+                prog.done("refine")
 
         out_segments = []
         all_quints: List[Quintuple] = []

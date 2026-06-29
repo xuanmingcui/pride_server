@@ -70,12 +70,8 @@ OUTPUT: ONLY a Python list of (subject, relation, object) 3-tuples. No markdown,
 
 Example of GOOD output (comprehensive — fine-grained visual + on-screen text + high-level framing):
 [
-  ("group of Indian men", "walks along", "Singapore street"),
-  ("group of Indian men", "numbers about", "twenty people"),
-  ("street sign", "reads", "Little India"),
-  ("on-screen caption", "claims", "Singapore streets are full of Indians"),
-  ("image", "portrays", "Indians as overrunning the city"),
-  ("narrative", "targets", "Indian community"),
+  ("group of Indian men", "walks along", "Singapore street"), # instead of ("men", "walks on", "street")
+  ...
 ]
 """,
             "user": """\
@@ -140,7 +136,7 @@ EXTRACT THESE LAYERS (cover every one that applies):
 4. ACTIONS & INTERACTIONS: who does what to whom; group movements; the sequence of events across time.
 5. SETTING & PLACE CUES: location type, country/city indicators (flags, architecture, language on signs), time of day, weather.
 6. ON-SCREEN TEXT CLAIMS: e.g. ("on-screen caption", "claims", "Indians are taking over Singapore", ...); ("overlay text", "reads", "...", ...).
-7. SPOKEN CLAIMS from the transcript, when present.
+7. SPOKEN CLAIMS from the transcript, when present — ATTRIBUTE each claim to the person identified as the speaker in the CONTEXT / "WHO IS WHO" note: use their name as the subject (e.g. ("Elon Musk", "claims", "the badges give cash prizes")). If the speaker is an unnamed voiceover, use "narrator". Break a long claim into several short atomic triplets rather than one long sentence-object.
 8. HIGH-LEVEL EVENTS & NARRATIVE: the overall story or message the clip conveys.
 9. FRAMING, STANCE & SENTIMENT: the rhetorical framing and its target, emotional tone, implied message or call to action — e.g. ("video", "portrays", "Indian immigrants as a threat", ...), ("narrative", "targets", "Indian community", ...), ("clip", "promotes", "anti-immigrant sentiment", ...). These inferred relations are essential; ground them in concrete on-screen evidence.
 
@@ -228,11 +224,11 @@ EXTRACT THESE LAYERS (cover every one that applies):
 1. ENTITIES: named people, organizations, countries, policies, events; and meaningful groups ("protesters", "Indian community", "immigrants").
 2. EVENTS, DECISIONS & ACTIONS: who does/says what to whom.
 3. AFFILIATIONS, OPPOSITIONS & AGREEMENTS: alliances, conflicts, support, endorsement.
-4. CLAIMS & ASSERTIONS stated in the text: e.g. ("author", "claims", "Indians are overrunning Singapore").
-5. ATTRIBUTES & QUANTITIES mentioned.
-6. FRAMING, STANCE & SENTIMENT: the rhetorical framing and its target, tone, and implied message — e.g. ("text", "portrays", "immigrants as a threat"), ("narrative", "targets", "Indian community"). Ground these in what the text actually says.
+4. CLAIMS & ASSERTIONS stated in the text — capture EVERY distinct claim, and ATTRIBUTE it to the speaker: if a "WHO IS WHO" / speaker note is provided, use that person's name as the subject (e.g. ("Elon Musk", "claims", "the seal badges give cash prizes")); otherwise use "narrator". Break a compound claim into several short atomic triplets (e.g. ("seal badges", "provide", "healthcare"), ("seal badges", "offer", "tax benefits"), ("seal badges", "offer", "cash prizes")).
+5. ATTRIBUTES, QUANTITIES & PROPERTIES mentioned (e.g. ("seal badges", "are", "limited supply")).
+6. FRAMING, STANCE & SENTIMENT: the rhetorical framing and its target, tone, and implied message — e.g. ("text", "portrays", "immigrants as a threat"), ("narrator", "promotes", "investment scam"). Ground these in what the text actually says.
 
-RELATIONS: short informative verb phrases (1-5 words); mix concrete and abstract freely. Use the SAME identifier for the same entity throughout.
+RELATIONS: short informative verb phrases (1-5 words); mix concrete and abstract freely. Use the SAME identifier for the same entity throughout. Keep each object phrase short (a few words) — split long sentences into multiple triplets.
 
 VOLUME & QUALITY: Be EXHAUSTIVE — produce as many well-supported triplets as the text warrants; do not cap the list. Do NOT invent facts not present in the text.
 
@@ -264,6 +260,25 @@ TEXT:
 {text}
 
 Output:
+""",
+        },
+
+        "identify_subjects": {
+            "system": """\
+You analyze a short video using frames sampled across it, its audio transcript, and any provided text/context. You produce a brief, shared CONTEXT note that a downstream per-segment extractor will use to ground its scene graph.
+
+Think briefly, then answer. Be concise. No markdown. Use exactly these labels:
+- SUMMARY: 1-3 sentences on what the video is about OVERALL, combining what is shown on screen, what is said in the transcript, and any provided text. Capture the topic, what is happening, and the apparent purpose/message.
+- VISIBLE: each notable person on screen — by NAME if a recognizable public figure (e.g. Elon Musk, Donald Trump), otherwise a short role/description. Note if a person appears AI-generated, deepfaked, or impersonated.
+- SPEAKER: who is speaking the transcript — a named/visible person, or an off-screen narrator/voiceover.
+- ATTRIBUTE_TO: the SINGLE name to use as the subject of spoken claims. Choose the prominent on-screen figure who the video presents as delivering the message — EVEN IF the audio is a voiceover or the figure is an AI-generated / deepfaked impersonation of them (a video showing Elon Musk while a voice pitches a product is presenting the claims AS Elon Musk → answer "Elon Musk"). Use "narrator" ONLY when no identifiable person is presented as the speaker. Format exactly: ATTRIBUTE_TO: <name>
+- VIDEO: in one phrase, the genre/type (e.g. scam advertisement, news report, vlog).
+""",
+            "user": """\
+TRANSCRIPT:
+{transcript}
+
+Using the frames, the transcript, and any provided text, give the SUMMARY and identification:
 """,
         },
 
@@ -417,6 +432,7 @@ TYPE SANITY (drop nonsensical rows)
 QUALITY FILTER
 - Drop low-information quintuples: tautologies, vague descriptors ("man stands"), and anything you would not consider a fact worth recording.
 - Drop quintuples whose subject or object cannot be identified confidently, or is a bare pronoun / placeholder ("they", "someone", "person", "individual", "it", "thing").
+- KEEP attributed spoken claims: a row whose relation is claims/says/promotes/announces/advertises and whose subject is a named person or "narrator"/"voiceover" is valuable — never drop it as low-information, and never drop it for naming the speaker "narrator".
 {level_rule}
 
 TIMESTAMPS
@@ -577,6 +593,19 @@ _META: Dict[str, Dict[str, Any]] = {
         "system_variables": {},
         "user_variables": {
             "text": "The input text submitted by the user.",
+        },
+    },
+    "identify_subjects": {
+        "label": "Speaker / Subject Identification (video pre-pass)",
+        "description": (
+            "Short multimodal pre-pass over frames sampled across the whole clip plus the ASR "
+            "transcript. Produces a brief 'who is on screen / who is speaking' note that is "
+            "injected as context into every window so spoken claims get attributed to the named "
+            "speaker (e.g. Elon Musk) instead of a generic 'speaker'."
+        ),
+        "system_variables": {},
+        "user_variables": {
+            "transcript": "The full ASR transcript (plus any user context).",
         },
     },
     "quality_filter": {

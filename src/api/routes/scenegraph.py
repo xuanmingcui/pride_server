@@ -75,7 +75,7 @@ async def start_scenegraph(
         if (system_prompt_override or user_prompt_override) else None
     )
 
-    def _run():
+    def _run(report=None):
         try:
             raw = sg.process(
                 media_path=media_path,
@@ -88,6 +88,7 @@ async def start_scenegraph(
                 prompt_override=_prompt_override,
                 raw_output=raw_output,
                 normalize=normalize,
+                progress_cb=report,
             )
             raw_segs = raw.get("segments", [])
             is_temporal = bool(raw_segs)

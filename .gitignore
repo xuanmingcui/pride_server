@@ -27,7 +27,7 @@ output/
 *.pt
 *.bin
 *.safetensors
-
+src/misinfo/datasets/
 # Logs
 *.log
 logs/

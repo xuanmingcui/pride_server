@@ -1,0 +1,48 @@
+{
+  "videos": {
+    "05bb8a1a-0a31-4e33-922a-0074436fb825": {
+      "id": "05bb8a1a-0a31-4e33-922a-0074436fb825",
+      "title": "[scam] trump elon great seal badges 2_5309894933065264897.MP4",
+      "ext": ".mp4",
+      "has_media": true,
+      "num_rows": 65,
+      "duration": 47.12,
+      "source": "user",
+      "model": "Qwen/Qwen3-VL-Embedding-2B",
+      "indexed_at": "2026-06-29T22:58:04.285592+00:00"
+    },
+    "563d04e0-1a3b-444b-b393-13249c8451e1": {
+      "id": "563d04e0-1a3b-444b-b393-13249c8451e1",
+      "title": "[scam] elon trump seal badges 2_5354842002041107588.MP4",
+      "ext": ".mp4",
+      "has_media": true,
+      "num_rows": 86,
+      "duration": 39.74,
+      "source": "user",
+      "model": "Qwen/Qwen3-VL-Embedding-2B",
+      "indexed_at": "2026-06-29T22:58:52.147652+00:00"
+    },
+    "78918992-b090-4d45-ad1e-f1007d7c98c6": {
+      "id": "78918992-b090-4d45-ad1e-f1007d7c98c6",
+      "title": "[scam] karoline levitt trump seal badges.MP4",
+      "ext": ".mp4",
+      "has_media": true,
+      "num_rows": 79,
+      "duration": 45.2,
+      "source": "user",
+      "model": "Qwen/Qwen3-VL-Embedding-2B",
+      "indexed_at": "2026-06-29T22:58:59.375985+00:00"
+    },
+    "ae35718d-b592-4090-87b1-53f4937fbeb4": {
+      "id": "ae35718d-b592-4090-87b1-53f4937fbeb4",
+      "title": "anti-mobilisation masks for  ukrarine video.mp4",
+      "ext": ".mp4",
+      "has_media": true,
+      "num_rows": 31,
+      "duration": 20.08,
+      "source": "user",
+      "model": "Qwen/Qwen3-VL-Embedding-2B",
+      "indexed_at": "2026-06-29T23:02:01.681588+00:00"
+    }
+  }
+}
