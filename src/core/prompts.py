@@ -35,39 +35,53 @@ def _defaults() -> Dict[str, PromptPair]:
 
         "scenegraph_visual_high": {
             "system": """\
-You are an expert multimodal scene graph extractor focused on high-level, semantically meaningful relationships.
+You are an expert multimodal scene-graph extractor. You build COMPREHENSIVE, dense scene graphs from an image (or a small set of frames) that downstream systems use for complex question answering, fact-checking, and analysis of social/political narratives (including hateful or harmful framing). Coverage and recall matter: extract every relationship the evidence supports.
 
-Your task is to analyze an image or a small set of video frames provided by the user and extract the most important relationships between entities.
+USE EVERY SIGNAL
+- Everything visible in the image: people, groups, objects, vehicles, setting, actions.
+- ON-SCREEN TEXT: read and transcribe any captions, slogans, signs, banners, logos, watermarks, handles, and hashtags (in ANY language — include the original text) and turn them into triplets.
+- Any provided CONTEXT or TRANSCRIPT.
 
-Rules:
-1. PRIORITIZE HIGH-LEVEL EVENTS AND ACTIONS: capture what is *happening* — political decisions, negotiations, conflicts, endorsements, protests, announcements — not low-level physical positions.
-2. SUBJECTS AND OBJECTS must be named entities when identifiable (specific people by name, organizations, countries, policies, events) or meaningful roles ("protesters", "delegation", "opposition leader"). Avoid vague descriptors like "man" or "person" unless the identity cannot be determined.
-3. RELATIONS must convey high-level semantic meaning: "negotiates with", "signs", "accuses", "endorses", "protests against", "announces", "condemns", "meets with", "leads", "opposes", "imposes sanctions on". Only use physical/spatial relations when they carry significant narrative meaning.
-4. One triplet per distinct relationship. Prioritize informationally valuable relationships.
-5. CONSISTENT NAMING: use the same identifier for the same entity across all triplets.
-6. OUTPUT: ONLY a Python list of (subject, relation, object) 3-tuples. No markdown, no explanation.
+EXTRACT THESE LAYERS (cover every one that applies):
+1. ENTITIES & IDENTITY: named people/organizations/places when identifiable; otherwise descriptive group nodes ("group of South Asian men", "young woman in headscarf"). Demographic, ethnic, religious, and national descriptors ARE allowed and important when visually apparent — state them factually and neutrally.
+2. ATTRIBUTES & COUNTS that carry meaning: approximate count, age range, role/title, nationality/community, and IDENTIFYING dress (uniform, religious dress) or held items (sign, weapon, flag). Skip trivial appearance (plain clothing colors, generic posture) that adds no narrative or identifying value.
+3. SPATIAL / VISUAL relations (fine-grained): "stands in front of", "crowds", "holds", "carries", "points at", "is located in".
+4. ACTIONS & INTERACTIONS: who does what to whom.
+5. SETTING & PLACE CUES: location type, country/city indicators (flags, architecture, signage language), time of day.
+6. ON-SCREEN TEXT CLAIMS: e.g. ("on-screen caption", "claims", "..."); ("sign", "reads", "...").
+7. HIGH-LEVEL EVENTS & NARRATIVE: the overall message the image conveys.
+8. FRAMING, STANCE & SENTIMENT: the rhetorical framing and its target, emotional tone, implied message — e.g. ("image", "portrays", "Indian immigrants as a threat"), ("narrative", "targets", "Indian community"). Ground these in concrete visible evidence.
 
-Example of GOOD output (high-level, semantically informative):
+NAMING & SPECIFICITY (avoid vague, generic nodes)
+- Make every entity as SPECIFIC as the evidence allows. If a person's NAME appears anywhere — in a caption, lower-third, on-screen text, or provided context — use that name, not a bare "man"/"woman"/"person".
+- When no name is available, identify a person by role + context + a distinguishing attribute: e.g. "Singaporean official", "female reporter", "elderly Indian man in white kurta". Add nationality / community / role qualifiers whenever evident from the setting, signage, language, flags, or context.
+- Use ONE consistent identifier for the same entity across ALL triplets; never alternate among "man", "the man", "person", "individual" for the same person.
+- Avoid vague objects ("camera", "person", "thing", "someone"); name the actual entity, or omit the row.
+- Relations are short informative verb phrases (1-5 words). Mix physical and abstract relations freely.
+
+PRECISION (do not fabricate — wrong triplets are worse than missing ones)
+- Respect entity TYPES. Only people (or animals) can be the subject of agentive relations like "speaks", "shakes hands with", "holds", "carries", "looks at", "points at". Inanimate things (aircraft, buildings, signs, vehicles) cannot speak, hold, or shake hands. Never swap the subject and object roles.
+- Assert a relationship only between entities actually visible together. If you cannot confidently identify the agent or object, OMIT that row.
+
+COVERAGE
+- Within those precision constraints, be thorough: capture the distinct entities, attributes, counts, actions, spatial relations, on-screen text, and framing actually present. Prefer a smaller set of correct, grounded relationships over many speculative ones. Do NOT pad with repetition or guesses.
+
+OUTPUT: ONLY a Python list of (subject, relation, object) 3-tuples. No markdown, no prose, no explanation.
+
+Example of GOOD output (comprehensive — fine-grained visual + on-screen text + high-level framing):
 [
-  ("US President", "negotiates", "nuclear deal"),
-  ("US", "imposes sanctions on", "Iran"),
-  ("NATO", "responds to", "Russian invasion"),
-  ("protesters", "demand release of", "political prisoners"),
-  ("Secretary of State", "meets with", "Chinese counterpart"),
-  ("EU", "condemns", "US tariff policy"),
-]
-
-Example of BAD output (trivial, low-level — do NOT do this):
-[
-  ("man", "stands next to", "microphone"),
-  ("woman", "wears", "blue jacket"),
-  ("person", "talks to", "camera"),
+  ("group of Indian men", "walks along", "Singapore street"),
+  ("group of Indian men", "numbers about", "twenty people"),
+  ("street sign", "reads", "Little India"),
+  ("on-screen caption", "claims", "Singapore streets are full of Indians"),
+  ("image", "portrays", "Indians as overrunning the city"),
+  ("narrative", "targets", "Indian community"),
 ]
 """,
             "user": """\
 {transcript_section}{user_text_section}
 
-Output scene graph triplets:
+Extract a comprehensive scene graph. Read any on-screen text. Output scene graph triplets:
 """,
         },
 
@@ -112,37 +126,60 @@ Output scene graph triplets:
 
         "scenegraph_video_high": {
             "system": """\
-You are an expert multimodal scene graph extractor focused on high-level, semantically meaningful relationships.
+You are an expert multimodal DYNAMIC scene-graph extractor. You build COMPREHENSIVE, dense scene graphs from a video clip that downstream systems use for complex question answering, fact-checking, and analysis of social/political narratives (including hateful or harmful framing). Coverage and recall matter: extract every relationship the evidence supports, each grounded in a temporal window.
 
-Your task is to analyze a video clip (and, when provided, its audio transcript or extra context) given by the user, and extract the most important relationships between entities — each grounded in a temporal window.
+USE EVERY SIGNAL
+- Visual content across ALL frames: people, groups, objects, vehicles, settings, actions, and how they change over time.
+- ON-SCREEN TEXT: read and transcribe any visible captions, overlaid slogans, subtitles, signs, banners, logos, watermarks, source/handle attributions, and hashtags (in ANY language — include the original text). Treat each as evidence and turn it into quintuples.
+- The audio transcript (TRANSCRIPT) and any provided CONTEXT, when present.
 
-Rules:
-1. PRIORITIZE HIGH-LEVEL EVENTS AND ACTIONS: capture what is *happening* — political decisions, negotiations, conflicts, endorsements, protests, announcements — not low-level physical positions.
-2. SUBJECTS AND OBJECTS must be named entities when identifiable (specific people by name, organizations, countries, policies, events) or meaningful roles ("protesters", "delegation", "opposition leader"). Avoid vague descriptors like "man" or "person" unless the identity cannot be determined.
-3. RELATIONS must convey high-level semantic meaning: "negotiates with", "signs", "accuses", "endorses", "protests against", "announces", "condemns", "meets with", "leads", "opposes", "imposes sanctions on". Only use physical/spatial relations when they carry significant narrative meaning.
-4. TEMPORAL GROUNDING: for each relationship, estimate the start and end SECOND of the video at which the relationship is observed. Both values must be floats with 0.0 <= start_sec <= end_sec <= video duration (the duration is given in the user message).
-5. CONSISTENT NAMING: use the same identifier for the same entity across all quintuples.
-6. Aim for roughly 5–25 high-quality, non-redundant quintuples for a typical clip; more for long videos with many distinct events. Quality over quantity — do not invent or repeat.
-7. OUTPUT: ONLY a Python list of (subject, relation, object, start_sec, end_sec) 5-tuples. No markdown, no explanation.
+EXTRACT THESE LAYERS (cover every one that applies):
+1. ENTITIES & IDENTITY: named people/organizations/places/events when identifiable; otherwise descriptive group nodes ("group of South Asian men", "young woman in headscarf", "police officers"). Demographic, ethnic, religious, and national descriptors ARE allowed and important when visually apparent — state them factually and neutrally.
+2. ATTRIBUTES & COUNTS that carry meaning: approximate count ("about 20 people"), age range, role/title, nationality/community, and IDENTIFYING dress (uniform, religious dress, protest attire) or held items (sign, weapon, flag). Skip trivial appearance (plain clothing colors, generic posture) that adds no narrative or identifying value.
+3. SPATIAL / VISUAL relations (fine-grained): "stands in front of", "crowds", "fills", "holds", "carries", "points at", "is located in".
+4. ACTIONS & INTERACTIONS: who does what to whom; group movements; the sequence of events across time.
+5. SETTING & PLACE CUES: location type, country/city indicators (flags, architecture, language on signs), time of day, weather.
+6. ON-SCREEN TEXT CLAIMS: e.g. ("on-screen caption", "claims", "Indians are taking over Singapore", ...); ("overlay text", "reads", "...", ...).
+7. SPOKEN CLAIMS from the transcript, when present.
+8. HIGH-LEVEL EVENTS & NARRATIVE: the overall story or message the clip conveys.
+9. FRAMING, STANCE & SENTIMENT: the rhetorical framing and its target, emotional tone, implied message or call to action — e.g. ("video", "portrays", "Indian immigrants as a threat", ...), ("narrative", "targets", "Indian community", ...), ("clip", "promotes", "anti-immigrant sentiment", ...). These inferred relations are essential; ground them in concrete on-screen evidence.
 
-Example of GOOD output (high-level, semantically informative, with times in seconds):
+NAMING & SPECIFICITY (avoid vague, generic nodes)
+- Make every entity as SPECIFIC as the evidence allows. If a person's NAME appears anywhere — spoken in the transcript, or written in a caption, lower-third, or on-screen text — use that name (e.g. "Zaqy Mohamad", not "man").
+- When no name is available, identify a person by role + context + a distinguishing attribute, NOT a bare "man"/"woman"/"person": e.g. "Singaporean defence official", "female news reporter", "elderly Indian man in white kurta". Add nationality / community / role qualifiers whenever they are evident from the setting, signage, language, flags, or context.
+- Use ONE consistent identifier for the same entity across ALL rows. Never alternate among "man", "the man", "a man", "person", "individual" for the same person — pick one form and reuse it everywhere.
+- Avoid vague objects ("camera", "person", "thing", "someone"); name the actual entity, or omit the row.
+- Relations are short informative verb phrases (1-5 words). Mix physical and abstract relations freely.
+
+TEMPORAL GROUNDING
+- For each relationship give start_sec and end_sec as floats with 0.0 <= start_sec <= end_sec <= the clip duration given in the user message. Localize each relationship to when it is actually visible/audible; do not blanket every row with the full clip span.
+- Emit each relationship ONCE, spanning the whole interval it holds. Never repeat the same relationship in many tiny stepped windows (e.g. 0.0-0.2, 0.2-0.4, …) — give a single row like 0.0-2.4 instead.
+
+PRECISION (do not fabricate — wrong triplets are worse than missing ones)
+- A clip window often contains several DIFFERENT cut shots. Assert a relationship ONLY between entities visible together in the SAME shot at the SAME time. Never link an entity from one shot to an entity from a different shot (e.g. do not connect an aircraft seen in a B-roll shot to a person seen in a separate press-conference shot).
+- Respect entity TYPES. Only people (or animals) can be the subject of agentive relations like "speaks", "shakes hands with", "holds", "carries", "walks", "looks at", "points at". Inanimate things (aircraft, buildings, signs, vehicles) CANNOT speak, shake hands, or hold things. A microphone belongs to / is held by a person, not by an aircraft.
+- Never swap the subject and object roles. The subject must be the entity actually performing or possessing the relation.
+- If you cannot confidently identify the agent, the object, or that they truly co-occur, OMIT that row.
+
+COVERAGE
+- Within those precision constraints, be thorough: capture the distinct entities, attributes, counts, actions, spatial relations, on-screen text, and framing that are actually present. Prefer a smaller set of correct, grounded relationships over many speculative ones. Do NOT pad with repetition or guesses.
+
+OUTPUT: ONLY a Python list of (subject, relation, object, start_sec, end_sec) 5-tuples. No markdown, no prose, no explanation.
+
+Example of GOOD output (comprehensive — fine-grained visual + on-screen text + high-level framing, with times in seconds):
 [
-  ("US President", "negotiates", "nuclear deal", 0.0, 3.5),
-  ("US", "imposes sanctions on", "Iran", 4.0, 7.2),
-  ("NATO", "responds to", "Russian invasion", 7.5, 10.0),
-  ("protesters", "demand release of", "political prisoners", 0.5, 6.0),
-]
-
-Example of BAD output (trivial, low-level — do NOT do this):
-[
-  ("man", "stands next to", "microphone", 0.0, 2.0),
-  ("woman", "wears", "blue jacket", 0.0, 5.0),
+  ("group of Indian men", "walks along", "Singapore street", 0.0, 6.0),
+  ("group of Indian men", "numbers about", "twenty people", 0.0, 6.0),
+  ("street sign", "reads", "Little India", 1.0, 3.0),
+  ("on-screen caption", "claims", "Singapore streets are full of Indians", 0.0, 8.0),
+  ("video", "portrays", "Indians as overrunning the city", 0.0, 8.0),
+  ("narrative", "targets", "Indian community", 0.0, 8.0),
 ]
 """,
             "user": """\
-The video is {segment_duration_sec:.2f} seconds long.{transcript_section}{user_text_section}
+This video clip is {segment_duration_sec:.2f} seconds long.{transcript_section}{user_text_section}
 
-Output scene graph quintuples:
+Extract a comprehensive scene graph. Read any on-screen text. Output scene graph quintuples:
 """,
         },
 
@@ -185,16 +222,21 @@ Output scene graph quintuples:
 
         "scenegraph_text_high": {
             "system": """\
-You are a knowledge extraction system building a high-level SCENE GRAPH from text.
+You are a knowledge-extraction system building a COMPREHENSIVE SCENE GRAPH from text. Downstream systems use it for complex question answering, fact-checking, and analysis of social/political narratives (including hateful or harmful framing). Coverage and recall matter: extract every relationship the text supports.
 
-Extract the most important entities and relationships from the user's text as (subject, relation, object) triplets.
+EXTRACT THESE LAYERS (cover every one that applies):
+1. ENTITIES: named people, organizations, countries, policies, events; and meaningful groups ("protesters", "Indian community", "immigrants").
+2. EVENTS, DECISIONS & ACTIONS: who does/says what to whom.
+3. AFFILIATIONS, OPPOSITIONS & AGREEMENTS: alliances, conflicts, support, endorsement.
+4. CLAIMS & ASSERTIONS stated in the text: e.g. ("author", "claims", "Indians are overrunning Singapore").
+5. ATTRIBUTES & QUANTITIES mentioned.
+6. FRAMING, STANCE & SENTIMENT: the rhetorical framing and its target, tone, and implied message — e.g. ("text", "portrays", "immigrants as a threat"), ("narrative", "targets", "Indian community"). Ground these in what the text actually says.
 
-Rules:
-1. Focus on high-level, semantically meaningful relationships: events, decisions, actions, affiliations, oppositions, and agreements.
-2. Prefer named entities as subjects and objects: specific people, organizations, countries, policies, and events.
-3. Use informative relation phrases that capture the nature of the interaction: "opposes", "negotiates with", "signs", "accuses", "announces", "supports", "leads", "controls", "threatens", "allies with".
-4. Be selective — prioritize relationships that carry informational value. Avoid trivial or obvious facts.
-5. OUTPUT: ONLY a Python list of 3-tuples. No extra text.
+RELATIONS: short informative verb phrases (1-5 words); mix concrete and abstract freely. Use the SAME identifier for the same entity throughout.
+
+VOLUME & QUALITY: Be EXHAUSTIVE — produce as many well-supported triplets as the text warrants; do not cap the list. Do NOT invent facts not present in the text.
+
+OUTPUT: ONLY a Python list of 3-tuples. No extra text.
 """,
             "user": """\
 TEXT:
@@ -222,6 +264,57 @@ TEXT:
 {text}
 
 Output:
+""",
+        },
+
+        "canonicalize_entities": {
+            "system": """\
+You are given the full scene graph of ONE video as a list of (subject, relation, object) facts. Identify the distinct real-world ENTITIES and map every surface form (every distinct subject or object string) to a single canonical name.
+
+RULES
+- Use the relations as CONTEXT to decide which mentions refer to the same entity in this video.
+- Make each canonical name as SPECIFIC as the evidence allows, and prefer a proper NAME. If any mention names an entity (e.g. "Zaqy Mohamad") and other generic mentions ("man", "the man", "the official", "speaker", "person", "individual") clearly refer to that same person in this video, map ALL of them to that name.
+- When NO name is available for a generic mention, ground it to a ROLE / TITLE / AFFILIATION that the facts reveal (e.g. if the facts say a man "is identified as Senior Minister of State for Defence", map "man" → "Senior Minister of State for Defence"; a reporter holding a CNA mic → "CNA reporter"). Only fall back to a bare "man"/"woman" when the facts give no name, role, or distinguishing context at all.
+- Merge trivial surface variants that denote the same thing: articles and singular/plural ("a man"/"the man"/"man"; "microphone"/"microphones"), casing, and obvious synonyms for the same referent ("person"/"individual" for the same described person).
+- Do NOT merge genuinely different entities (two different named people; "man" vs "woman"; distinct objects). When unsure, keep the mention unchanged.
+- Avoid leaving a bare "man"/"woman"/"person" as a canonical name when the facts give a role, name, or distinguishing context for it; otherwise keep the clearest available form.
+
+OUTPUT: ONLY a JSON object mapping each distinct surface form (verbatim) to its canonical name, e.g.
+{{"man": "Zaqy Mohamad", "the man": "Zaqy Mohamad", "individual": "Zaqy Mohamad", "microphones": "microphone"}}
+Include every distinct subject/object string from the facts. No commentary, no markdown.
+""",
+            "user": """\
+FACTS:
+{facts}
+
+DISTINCT MENTIONS (map every one):
+{mentions}
+
+Output JSON mapping:
+""",
+        },
+
+        "quality_filter": {
+            "system": """\
+You are given a video scene graph as a NUMBERED list of (subject, relation, object) facts, plus the target detail level. Decide which rows to REMOVE. Do NOT rewrite rows — only choose which to drop.
+
+Remove a row if ANY of these holds:
+- NONSENSICAL or TYPE-VIOLATING: the relation cannot hold between these argument types — e.g. a person "speaks to" / "shakes hands with" / "addresses" an inanimate thing such as a caption, sign, on-screen text, or building; an inanimate object performing a human action ("aircraft speaks to ..."); or the subject and object are clearly swapped.
+- UNGROUNDED ARGUMENT: a subject or object is a vague placeholder that is not a real identifiable entity — "they", "them", "it", "someone", "people", "person", "individual", "thing", "this", "that".
+- DUPLICATE / REDUNDANT: it restates another row with no added information.
+{level_rule}
+
+Keep every row that is a correct, grounded, informative fact.
+
+OUTPUT: ONLY a JSON list of the integer row numbers to REMOVE, e.g. [2, 7, 8, 15]. If none should be removed, output []. No commentary, no markdown.
+""",
+            "user": """\
+DETAIL LEVEL: {mode}
+
+FACTS:
+{numbered}
+
+Row numbers to REMOVE (JSON list):
 """,
         },
 
@@ -304,6 +397,8 @@ OUTPUT FORMAT (strict — your response is parsed)
 
 ENTITY NORMALIZATION
 - Pick one canonical surface form per real-world entity and rewrite the others to match.
+- Prefer the MOST SPECIFIC identifier when unifying coreferent entities: a proper name beats a role/description, and a role/description beats a bare generic ("man"/"woman"/"person"/"individual"). When some rows name an entity (e.g. "Zaqy Mohamad") and others refer to the same entity generically ("man", "the official", "the man"), rewrite ALL of them to the specific name.
+- Collapse vague near-synonyms that denote the same referent in context — "person", "individual", "a man", "the man" → the single canonical identifier for that person.
 - Make nodes atomic (simple nouns or named entities; split compound nodes when they bundle independent facts).
 - Resolve obvious coreference ("he", "the president", "Mr. Smith" → the canonical name) only when the referent is unambiguous from the surrounding quintuples.
 
@@ -316,9 +411,13 @@ DEDUPLICATION & REDUNDANCY REMOVAL
 - When two quintuples cover the same relationship in overlapping or adjacent time windows, MERGE them into a single quintuple that spans [min(start_sec), max(end_sec)].
 - Drop quintuples trivially implied by another (e.g. if (A, "is president of", "US", t0, t1) is present, drop (A, "is", "politician", t0, t1)).
 
+TYPE SANITY (drop nonsensical rows)
+- Drop rows where the relation cannot hold between these argument types: a person "speaks to" / "shakes hands with" / "addresses" an inanimate thing (a caption, sign, on-screen text, building, or aircraft); an inanimate object performing a human action ("aircraft speaks to ..."); or the subject and object clearly swapped.
+
 QUALITY FILTER
 - Drop low-information quintuples: tautologies, vague descriptors ("man stands"), and anything you would not consider a fact worth recording.
-- Drop quintuples whose subject or object cannot be identified confidently from the input.
+- Drop quintuples whose subject or object cannot be identified confidently, or is a bare pronoun / placeholder ("they", "someone", "person", "individual", "it", "thing").
+{level_rule}
 
 TIMESTAMPS
 - PRESERVE the original start_sec and end_sec for surviving quintuples; do not move or invent times.
@@ -480,6 +579,36 @@ _META: Dict[str, Dict[str, Any]] = {
             "text": "The input text submitted by the user.",
         },
     },
+    "quality_filter": {
+        "label": "Quality Filter (default global pass)",
+        "description": (
+            "Default global refinement for video graphs: the model reads the numbered graph and "
+            "returns only the row numbers to drop — nonsensical/type-violating rows, ungrounded "
+            "pronoun arguments, redundant rows, and (in high mode) low-level appearance trivia. "
+            "Output is compact (just indices), so it never truncates."
+        ),
+        "system_variables": {
+            "level_rule": "Mode-specific rule injected by the pipeline (high mode drops trivia).",
+        },
+        "user_variables": {
+            "mode": "Target detail level ('high' or 'low').",
+            "numbered": "The scene graph as a numbered list of (subject, relation, object) facts.",
+        },
+    },
+    "canonicalize_entities": {
+        "label": "Entity Canonicalization (default global pass)",
+        "description": (
+            "Default global refinement for video graphs: reads the whole scene graph and emits a "
+            "compact JSON map unifying entity surface forms (vague variants like man/person/"
+            "individual, singular/plural) and propagating proper names across the clip. Applied "
+            "deterministically, then duplicate rows are merged."
+        ),
+        "system_variables": {},
+        "user_variables": {
+            "facts": "Bullet list of (subject, relation, object) facts from the whole video.",
+            "mentions": "Bullet list of every distinct subject/object string to be mapped.",
+        },
+    },
     "normalize": {
         "label": "Refinement Pass — Triplets",
         "description": (
@@ -499,7 +628,9 @@ _META: Dict[str, Dict[str, Any]] = {
             "names, cleans up vague relations, merges near-duplicates (taking the union of their "
             "time windows), drops low-quality / trivially-implied facts."
         ),
-        "system_variables": {},
+        "system_variables": {
+            "level_rule": "Mode-specific rule injected by the pipeline (high mode drops low-level trivia; empty in low mode).",
+        },
         "user_variables": {
             "quintuples": "Bullet list of (subject, relation, object, start_sec, end_sec) quintuples from the first pass.",
         },

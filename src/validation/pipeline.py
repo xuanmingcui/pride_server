@@ -3,8 +3,10 @@
 Flow
 ----
 1. Audio extraction + transcript (if video input).
-2. Multimodal embedding of the full input (transcript + text + visual frames)
-   via MultimodalEmbedder → retrieve the most relevant facts from the DB.
+2. Multimodal embedding of the full input (text + transcript + visual frames)
+   via MultimodalEmbedder → the query vector encodes the frames directly (shared
+   image/text space), so image- and video-only inputs retrieve relevant facts
+   without needing a transcript. Retrieve the most relevant facts from the DB.
 3. Feed the original input (frames + transcript + text) together with the
    retrieved facts to the MLLM in a single call.
 4. The MLLM writes a natural-language fact-check report — no structured JSON,

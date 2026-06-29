@@ -13,6 +13,7 @@
   <nav>
     <button class="tab-btn active" data-tab="scenegraph">Scene Graph</button>
     <button class="tab-btn" data-tab="validate">Validate</button>
+    <button class="tab-btn" data-tab="misinfo">Misinfo</button>
     <button class="tab-btn" data-tab="databases">Databases</button>
   </nav>
 </header>
@@ -81,10 +82,10 @@
 
         <div class="form-group">
           <label class="checkbox-inline">
-            <input type="checkbox" id="sg-normalize-pre">
+            <input type="checkbox" id="sg-normalize-pre" checked>
             <span>
               <strong>Run refinement pass</strong>
-              <small>Second MLLM pass that normalizes entity names, tightens vague relations, merges near-duplicates, and drops low-quality rows. Adds latency. You can also run it after the fact from the result panel.</small>
+              <small>On by default. Global second MLLM pass that unifies entity names (and propagates names across the clip), tightens vague relations, merges near-duplicates, and drops low-quality rows. Adds latency. Uncheck to skip; you can also run it after the fact from the result panel.</small>
             </span>
           </label>
         </div>
@@ -233,6 +234,56 @@
     </div>
   </section>
 
+  <!-- ── Misinfo tab ─────────────────────────────────────────────── -->
+  <section id="tab-misinfo" class="tab-pane">
+    <div class="split">
+
+      <!-- Input panel -->
+      <div class="card">
+        <div class="card-title">Input</div>
+
+        <div class="form-group">
+          <label>Dataset</label>
+          <select id="mi-database"><option value="">default</option></select>
+        </div>
+
+        <div class="form-group">
+          <label>Question</label>
+          <textarea id="mi-text" rows="3" placeholder="Ask a question…"></textarea>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Top-K facts</label>
+            <input type="number" id="mi-topk" placeholder="default" min="1" max="20">
+          </div>
+          <div class="form-group">
+            <label>Mode</label>
+            <select id="mi-mode">
+              <option value="direct">Direct</option>
+              <option value="graph">Graph Decomposition</option>
+            </select>
+          </div>
+        </div>
+
+        <button class="btn btn-primary" id="mi-submit">Run Misinformation Detection</button>
+      </div>
+
+      <!-- Result panel -->
+      <div class="card">
+        <div class="result-header">
+          <div class="card-title" style="margin:0">Report</div>
+        </div>
+        <div class="result-area" id="mi-result">
+          <div class="empty">
+            <p>Submit a request to see results here.</p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
   <!-- ── Databases tab ───────────────────────────────────────────── -->
   <section id="tab-databases" class="tab-pane">
 
@@ -326,6 +377,6 @@
 
 <div id="toast"></div>
 
-<script src="app.js"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

@@ -28,20 +28,31 @@ from .overlay import annotate_image_with_triplets_panel, annotate_video_with_tri
 from .triplets import (
     Quintuple,
     Triplet,
+    apply_entity_map,
+    build_canonicalize_entities_prompt,
     build_normalize_prompt,
     build_normalize_quintuples_prompt,
+    drop_ungrounded_rows,
+    parse_entity_map,
     build_scenegraph_prompt,
     build_srt_from_segments,
     build_text_only_scenegraph_prompt,
     build_video_segment_prompt,
     extract_quintuples_from_text,
     extract_triplets_from_text,
+    merge_quintuples,
     shift_quintuples,
     validate_quintuples,
     validate_triplets,
 )
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff"}
+
+# Token budget for the refinement/normalization pass. It must re-emit the whole
+# (possibly large) graph as a Python list, so it needs far more room than a
+# single windowed extraction call — otherwise the output truncates and the
+# truncation guard discards the refinement, leaving duplicates un-merged.
+_NORMALIZE_MAX_TOKENS = 8192
 
 
 def _looks_complete_list(text: str) -> bool:
@@ -169,6 +180,12 @@ class SceneGraphPipeline:
         # ceil(window_seconds * fps), clamped to [min_frames, context cap].
         self.fps = float(scenegraph_config.get("fps", 1.0))
         self.min_frames = int(scenegraph_config.get("min_frames", 4))
+        # Target extraction-window length (seconds). The video is split into
+        # windows of at most this length and each window gets its own dense,
+        # temporally-grounded MLLM call. This is the main lever for triplet
+        # density and fine-grained temporal grounding. 0 disables windowing
+        # (one call over the whole clip, subject only to the context-budget cap).
+        self.window_sec = float(scenegraph_config.get("window_sec", 0.0))
         # Config default for whether the first-round generation auto-runs the
         # normalize pass. Most callers should leave this False — normalization
         # is exposed as a separate, user-triggered step (see normalize_segments).
@@ -309,14 +326,16 @@ class SceneGraphPipeline:
             log.info("Raw output mode: bypassing segmentation, processing as single clip.")
             return self._video_whole(video_path, transcript_text, user_text, temperature, fps,
                                      mode, prompt_override, raw_output)
-        if asr_segments:
-            return self._video_by_segments(
-                video_path, asr_segments, transcript_text, user_text, temperature, fps, mode,
-                prompt_override,
-            )
-        log.info("No ASR segments → processing video as a single whole clip.")
-        return self._video_whole(video_path, transcript_text, user_text, temperature, fps, mode,
-                                 prompt_override)
+
+        # Unified windowed extraction: split the clip into short windows and run
+        # one dense, temporally-grounded call per window (batched). Per-window
+        # ASR text (when available) is attached as transcript context. This
+        # subsumes the old ASR-segment / whole-clip / temporal-split branches and
+        # is the main driver of triplet density + fine-grained temporal grounding.
+        return self._video_windowed(
+            video_path, duration, asr_segments, transcript_text, user_text,
+            temperature, fps, mode, prompt_override,
+        )
 
     # ------------------------------------------------------------------
     # Adaptive temporal segmentation (no-ASR path)
@@ -337,6 +356,139 @@ class SceneGraphPipeline:
             max_duration_ctx = max_frames_ctx / fps
         """
         return self._max_frames_per_call() / max(fps, 1e-6)
+
+    @staticmethod
+    def _asr_text_for_window(asr_segments: List[Dict], start: float, end: float) -> str:
+        """Concatenate ASR segment text overlapping [start, end)."""
+        parts: List[str] = []
+        for seg in asr_segments:
+            s = float(seg.get("start", 0.0))
+            e = float(seg.get("end", 0.0))
+            if e > start and s < end:
+                txt = (seg.get("text") or "").strip()
+                if txt:
+                    parts.append(txt)
+        return " ".join(parts).strip()
+
+    def _video_windowed(
+        self,
+        video_path: str,
+        duration: float,
+        asr_segments: List[Dict],
+        transcript_text: str,
+        user_text: str,
+        temperature: Optional[float],
+        fps: float,
+        mode: str,
+        prompt_override: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Split the clip into short windows and densely extract each (batched).
+
+        The window length is ``scenegraph.window_sec`` (config), capped by the
+        per-call context budget. Per-window ASR text is attached as transcript
+        context so the spoken track stays aligned with the visuals. Each window's
+        quintuples are produced in segment-relative time, then shifted to
+        absolute video time.
+        """
+        max_seg_dur = self._max_segment_duration(fps)
+        window = self.window_sec if self.window_sec > 0 else duration
+        window = min(window, max_seg_dur)
+        if window <= 0:
+            window = duration
+
+        boundaries: List[tuple] = []
+        t = 0.0
+        while t < duration:
+            boundaries.append((t, min(t + window, duration)))
+            t += window
+        if not boundaries:
+            boundaries = [(0.0, duration)]
+
+        log.info(
+            "Windowed extraction: %d window(s) of up to %.1fs each (fps=%.2f, duration=%.1fs, asr=%s).",
+            len(boundaries), window, fps, duration, "yes" if asr_segments else "no",
+        )
+
+        max_per_call = self._max_frames_per_call()
+        requests: List[Dict] = []
+        seg_meta: List[Dict] = []
+        seg_durations: List[float] = []
+        for start, end in boundaries:
+            frames, eff_fps = sample_frames(
+                video_path, fps, start, end,
+                min_frames=self.min_frames, max_frames=max_per_call,
+            )
+            if not frames:
+                continue
+            seg_dur = max(0.0, end - start)
+            # Prefer per-window ASR text; fall back to the full transcript when
+            # the ASR has no per-segment timing for this window.
+            win_text = self._asr_text_for_window(asr_segments, start, end) if asr_segments else ""
+            if not win_text and not asr_segments:
+                win_text = transcript_text
+            pair = build_video_segment_prompt(
+                segment_duration_sec=seg_dur,
+                transcript_text=win_text, mode=mode, user_text=user_text,
+                template_override=prompt_override,
+            )
+            requests.append({"prompt": pair["user"], "system_prompt": pair["system"],
+                             "frames": frames, "fps": eff_fps})
+            seg_meta.append({"start": start, "end": end})
+            seg_durations.append(seg_dur)
+
+        if not requests:
+            log.warning("No usable windows after frame sampling.")
+            return {"triplets": [], "segments": [], "transcript": transcript_text}
+
+        log.info("Running MLLM batch: %d window(s) …", len(requests))
+        # Generate per-window quintuples WITHOUT the in-line per-window normalize;
+        # we run the refinement explicitly below so we can also do a light global
+        # entity-rename pass for cross-window name consistency.
+        want_normalize = self._normalize_now and mode == "high"
+        prev_norm = self._normalize_now
+        self._normalize_now = False
+        try:
+            batch_results = self._run_batch_quintuples(requests, temperature, mode, seg_durations)
+        finally:
+            self._normalize_now = prev_norm
+
+        # Shift each window to absolute time but KEEP the per-window structure —
+        # refining/merging globally and re-bucketing by start time collapsed every
+        # recurring fact into the first window and emptied the rest.
+        seg_quints: List[List[Quintuple]] = [
+            validate_quintuples(
+                shift_quintuples(quints, offset_sec=meta["start"], segment_duration_sec=seg_dur)
+            )
+            for meta, seg_dur, quints in zip(seg_meta, seg_durations, batch_results)
+        ]
+
+        if want_normalize:
+            # 1. Per-window refinement (batched, small lists → robust, no truncation):
+            #    dedup, vague-variant unification, relation cleanup, type/quality
+            #    filter, and high-mode low-level-trivia removal.
+            seg_quints = self._normalize_quintuples_batch(seg_quints, mode)
+            # 2. Drop rows whose subject/object is a bare pronoun/placeholder.
+            seg_quints = [drop_ungrounded_rows(seg) for seg in seg_quints]
+            # 3. Light GLOBAL rename for cross-window consistency (map only — no
+            #    span-merge, no re-bucketing) so a person named in one window is
+            #    named the same way everywhere.
+            rename = self._entity_rename_map([q for seg in seg_quints for q in seg])
+            if rename:
+                seg_quints = [
+                    validate_quintuples(apply_entity_map(seg, rename)) for seg in seg_quints
+                ]
+
+        out_segments = []
+        all_quints: List[Quintuple] = []
+        for meta, quints in zip(seg_meta, seg_quints):
+            meta["triplets"] = quints
+            out_segments.append(meta)
+            all_quints.extend(quints)
+        validated = validate_quintuples(all_quints)
+
+        log.info("Windowed extraction done: %d window(s), %d total quintuple(s).",
+                 len(out_segments), len(validated))
+        return {"triplets": validated, "segments": out_segments, "transcript": transcript_text}
 
     def _video_whole(
         self, video_path: str, transcript_text: str, user_text: str,
@@ -466,75 +618,6 @@ class SceneGraphPipeline:
         )
         return {"triplets": validated, "segments": out_segments, "transcript": transcript_text}
 
-    def _video_by_segments(
-        self,
-        video_path: str,
-        asr_segments: List[Dict],
-        transcript_text: str,
-        user_text: str,
-        temperature: Optional[float],
-        fps: float,
-        mode: str,
-        prompt_override: Optional[Dict[str, str]] = None,
-        raw_output: bool = False,
-    ) -> Dict[str, Any]:
-        """Build one request per ASR segment, submit ALL in a single batch call."""
-        requests: List[Dict] = []
-        seg_meta: List[Dict] = []
-        seg_durations: List[float] = []
-        max_per_call = self._max_frames_per_call()
-
-        log.info("Mode: video by segments (%d ASR segment(s), fps=%.2f). Sampling frames …",
-                 len(asr_segments), fps)
-        for seg in asr_segments:
-            frames, eff_fps = sample_frames(
-                video_path, fps, seg["start"], seg["end"],
-                min_frames=self.min_frames, max_frames=max_per_call,
-            )
-            if not frames:
-                continue
-            seg_text = seg.get("text", "")
-            seg_dur = max(0.0, seg["end"] - seg["start"])
-            pair = build_video_segment_prompt(
-                segment_duration_sec=seg_dur,
-                transcript_text=seg_text, mode=mode, user_text=user_text,
-                template_override=prompt_override,
-            )
-            requests.append({"prompt": pair["user"], "system_prompt": pair["system"],
-                             "frames": frames, "fps": eff_fps})
-            seg_meta.append({"start": seg["start"], "end": seg["end"]})
-            seg_durations.append(seg_dur)
-
-        if not requests:
-            log.warning("No usable segments after frame sampling.")
-            return {"triplets": [], "segments": [], "transcript": transcript_text}
-
-        log.info("Running MLLM batch: %d request(s) …", len(requests))
-        if raw_output:
-            raw_texts = self._run_batch_raw(requests, temperature)
-            out_segments = []
-            for meta, raw_text in zip(seg_meta, raw_texts):
-                meta["triplets"] = []
-                meta["raw_text"] = raw_text
-                out_segments.append(meta)
-            log.info("Video by segments raw done: %d segment(s).", len(out_segments))
-            return {"triplets": [], "segments": out_segments, "transcript": transcript_text}
-
-        batch_results = self._run_batch_quintuples(requests, temperature, mode, seg_durations)
-        out_segments = []
-        all_quints: List[Quintuple] = []
-        for meta, seg_dur, quints in zip(seg_meta, seg_durations, batch_results):
-            shifted = shift_quintuples(quints, offset_sec=meta["start"],
-                                       segment_duration_sec=seg_dur)
-            meta["triplets"] = shifted
-            out_segments.append(meta)
-            all_quints.extend(shifted)
-
-        validated = validate_quintuples(all_quints)
-        log.info("Video by segments done: %d segment(s), %d total quintuple(s).",
-                 len(out_segments), len(validated))
-        return {"triplets": validated, "segments": out_segments, "transcript": transcript_text}
-
     # ------------------------------------------------------------------
     # Inference helpers
     # ------------------------------------------------------------------
@@ -584,7 +667,10 @@ class SceneGraphPipeline:
                 t0 = max(0.0, min(t0, seg_dur))
                 t1 = max(t0, min(t1, seg_dur))
                 clamped.append((s, r, o, t0, t1))
-            results.append(validate_quintuples(clamped))
+            # Collapse micro-stepped duplicates of the same (s, r, o) within a
+            # window (e.g. a static shot emitted at 0.0-0.2, 0.2-0.4, …) before
+            # dedup so they become one row spanning the interval they hold.
+            results.append(validate_quintuples(merge_quintuples(clamped)))
 
         if self._normalize_now and mode == "high":
             log.info("Running quintuple normalization pass on %d result(s) …", len(results))
@@ -686,25 +772,55 @@ class SceneGraphPipeline:
             for seg, trips in zip(segments, normalized)
         ]
 
-    def _normalize_quintuples_batch(
-        self, all_quints: List[List[Quintuple]]
-    ) -> List[List[Quintuple]]:
-        """Refine quintuple lists (entity normalization + dedup + quality filter).
+    def _entity_rename_map(self, quints: List[Quintuple]) -> Dict[str, str]:
+        """Ask the model for a {surface_form: canonical_name} entity map.
 
-        Time fields on surviving rows are preserved by the prompt; the only
-        local safety check is structural — if the model's output is not a
-        properly-terminated list, we assume the generation got cut off and
-        keep the pre-refinement result for that segment rather than silently
-        dropping data.
+        The whole graph is given as context but the model only emits a small
+        JSON map (output → no truncation). This is RENAME-ONLY: it is applied
+        deterministically per window without any span-merge or re-bucketing, so
+        a person named in one window is named consistently everywhere while the
+        per-window temporal structure is preserved. Identity mappings are
+        dropped so callers only see real renames.
+        """
+        if not quints:
+            return {}
+        pair = build_canonicalize_entities_prompt(quints)
+        try:
+            text = self.backend.generate_text(
+                pair["user"], system_prompt=pair["system"], max_tokens=4096,
+            )
+        except Exception as e:
+            log.warning("Entity rename call failed: %s", e)
+            return {}
+        mapping = parse_entity_map(text)
+        rename = {k: v for k, v in mapping.items() if k.strip().lower() != v.strip().lower()}
+        if not rename:
+            log.info("Entity rename: no cross-window renames proposed.")
+        else:
+            log.info("Entity rename: %d surface form(s) remapped.", len(rename))
+        return rename
+
+    def _normalize_quintuples_batch(
+        self, all_quints: List[List[Quintuple]], mode: str = "high"
+    ) -> List[List[Quintuple]]:
+        """Refine quintuple lists per-segment (entity normalization + dedup +
+        relation cleanup + type/quality filter + high-mode trivia removal).
+
+        Each segment is refined independently with its own (small) list, so the
+        output never truncates the way a single whole-graph rewrite does. Time
+        fields on surviving rows are preserved by the prompt; if a segment's
+        output is not a properly-terminated list we assume truncation and keep
+        that segment's pre-refinement result rather than dropping data.
         """
         indices = [i for i, q in enumerate(all_quints) if q]
         if not indices:
             return all_quints
-        pairs = [build_normalize_quintuples_prompt(all_quints[i]) for i in indices]
+        pairs = [build_normalize_quintuples_prompt(all_quints[i], mode) for i in indices]
         try:
             texts = self.backend.generate_text_batch(
                 [p["user"] for p in pairs],
                 [p["system"] for p in pairs],
+                max_tokens=_NORMALIZE_MAX_TOKENS,
             )
         except Exception:
             return all_quints
@@ -740,6 +856,7 @@ class SceneGraphPipeline:
             texts = self.backend.generate_text_batch(
                 [p["user"] for p in pairs],
                 [p["system"] for p in pairs],
+                max_tokens=_NORMALIZE_MAX_TOKENS,
             )
         except Exception:
             return all_trips

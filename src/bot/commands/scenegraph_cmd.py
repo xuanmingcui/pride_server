@@ -40,7 +40,7 @@ class SceneGraphCog(commands.Cog):
         mode="Scene graph mode: 'high' for semantic/news (default), 'low' for physical/visual.",
         temperature="Sampling temperature (default from config, e.g. 0.8).",
         fps="Frame sampling rate (frames per second; default from config, e.g. 1.0). Per-call frame count = ceil(window_seconds × fps), clamped by min_frames and the context budget.",
-        normalize="Run the refinement pass after generation: entity normalization + dedup + quality filter (off by default; adds latency).",
+        normalize="Run the refinement pass after generation: global entity normalization + dedup + quality filter (on by default; set False to skip and save latency).",
         model="Override model name (must be loaded; restart required to change).",
     )
     @app_commands.choices(
@@ -62,7 +62,7 @@ class SceneGraphCog(commands.Cog):
         mode: str = "high",
         temperature: Optional[float] = None,
         fps: Optional[float] = None,
-        normalize: bool = False,
+        normalize: bool = True,
         model: Optional[str] = None,
     ) -> None:
         if not media and not text:

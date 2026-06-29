@@ -55,10 +55,10 @@ function setStatus(idPrefix, msg, type = '') {
   if (spinner) spinner.style.display = type ? 'none' : '';
 }
 
-/** Poll /api/tasks/:id until done or error. Returns the result dict. */
-async function pollTask(taskId, onStatus) {
+/** Poll {basePath}/:id until done or error. Returns the result dict. */
+async function pollTask(taskId, onStatus, basePath = '/api/tasks') {
   while (true) {
-    const r = await fetch(`/api/tasks/${taskId}`);
+    const r = await fetch(`${basePath}/${taskId}`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
     if (data.status === 'done') return data.result;
@@ -76,6 +76,7 @@ $$('.tab-btn').forEach(btn => {
     btn.classList.add('active');
     $(`#tab-${btn.dataset.tab}`).classList.add('active');
     if (btn.dataset.tab === 'validate') loadDatabasesIntoSelect('#val-database');
+    if (btn.dataset.tab === 'misinfo') loadDatabasesIntoSelect('#mi-database');
     if (btn.dataset.tab === 'databases') refreshDatabaseSelector();
   });
 });
@@ -834,6 +835,93 @@ function updateSgPromptModifiedBadge() {
                  || $('#sg-prompt-user-ta').value !== _sgPrompt.serverUser;
   $('#sg-prompt-modified').style.display = modified ? '' : 'none';
 }
+
+// Render the result of a single-claim verification (verifier.single_prompt).
+function renderMisinfo(result, container) {
+  if (!result) { container.innerHTML = '<div class="report-text">No result returned.</div>'; return; }
+
+  const pred = result.prediction || '—';
+  const isSupported = pred === 'SUPPORTED';
+  const color = isSupported ? '#1a9850' : '#c0392b';
+
+  const support = new Set(result.support_indices || []);
+  const refute = new Set(result.refute_indices || []);
+  const ri = result.retrieval_info || {};
+  const docIds = ri.doc_id_list || [];
+  const scores = ri.score_list || [];
+
+  const chips =
+    `<div class="chips">` +
+    `<span class="chip">Verdict: <strong style="color:${color}">${esc(pred)}</strong></span>` +
+    `<span class="chip">Support: <strong>${(result.support_indices || []).length}</strong></span>` +
+    `<span class="chip">Refute: <strong>${(result.refute_indices || []).length}</strong></span>` +
+    `<span class="chip">Unrelated: <strong>${(result.not_related || []).length}</strong></span>` +
+    `</div>`;
+
+  const lines = (result.evidence || '').split('\n').filter(l => l.trim() !== '');
+  const rows = lines.map((line, i) => {
+    let stance = '·', sColor = '#888';
+    if (support.has(i)) { stance = 'support'; sColor = '#1a9850'; }
+    else if (refute.has(i)) { stance = 'refute'; sColor = '#c0392b'; }
+    const docId = docIds[i] != null ? esc(String(docIds[i])) : '';
+    const score = scores[i] != null ? Number(scores[i]).toFixed(2) : '';
+    const text = line.replace(/^\s*\d+\.\s*/, '');   // strip the "i. " prefix
+    return `<tr style="border-bottom:1px solid var(--border,#eee)">` +
+      `<td style="padding:4px 8px;color:${sColor};white-space:nowrap">${stance}</td>` +
+      `<td style="padding:4px 8px;font-size:12px;opacity:.7;white-space:nowrap">${docId}${score ? ` (${score})` : ''}</td>` +
+      `<td style="padding:4px 8px">${esc(text)}</td></tr>`;
+  }).join('');
+
+  const table = lines.length
+    ? `<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:10px">` +
+      `<thead><tr style="text-align:left;border-bottom:1px solid var(--border,#ddd)">` +
+      `<th style="padding:4px 8px">Stance</th><th style="padding:4px 8px">Doc</th>` +
+      `<th style="padding:4px 8px">Evidence</th></tr></thead><tbody>${rows}</tbody></table>`
+    : `<div class="report-text" style="opacity:.6;margin-top:8px">No evidence retrieved.</div>`;
+
+  container.innerHTML = chips + table;
+}
+
+$('#mi-submit').addEventListener('click', async () => {
+  const container = $('#mi-result');
+  const btn = $('#mi-submit');
+  const claim = $('#mi-text').value.trim();
+  if (!claim) {
+    container.innerHTML = `<div class="report-text" style="color:#c0392b">Enter a claim to verify.</div>`;
+    return;
+  }
+
+  const body = { prompt: claim };
+  const topk = $('#mi-topk').value;
+  if (topk !== '') body.top_k = Math.max(1, Math.floor(Number(topk)));
+
+  container.innerHTML = '<div class="report-text">Verifying…</div>';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/misinfo/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.error || err.load_error || `HTTP ${r.status}`);
+    }
+    const result = await r.json();
+    renderMisinfo(result, container);
+  } catch (e) {
+    container.innerHTML = `<div class="report-text" style="color:#c0392b">Error: ${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#mi-topk').addEventListener('input', () => {
+  const el = $('#mi-topk');
+  if (el.value === '') return;
+  const v = Math.min(20, Math.max(1, Math.floor(Number(el.value))));
+  el.value = String(v);
+});
 
 $$('input[name="sg-mode"]').forEach(r => r.addEventListener('change', () => {
   _sgPrompt.name = '';

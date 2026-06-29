@@ -7,8 +7,9 @@ model:
   backend: "vllm"           # vllm | transformers
   device: "cuda"            # cuda | cpu | auto
   dtype: "auto"             # auto | fp16 | bf16
-  max_new_tokens: 2048
-  temperature: 0.8
+  max_new_tokens: 4096
+  temperature: 0.2           # low temp for grounded structured extraction (high temp fabricates
+                             # nonsensical / cross-shot triplets, e.g. "aircraft speaks to man")
   tensor_parallel_size: 1   # increase for multi-GPU (vllm only)
   max_model_len: 32768      # cap KV cache length; your GPU fits ~41520 max
 
@@ -26,7 +27,14 @@ scenegraph:
                             # capped by the context-budget cap below.
   min_frames: 4             # never sample fewer than this from any window (short ASR segments
                             # still get enough visual context; extra frames pad by duplication).
-  normalize_pass: false     # second MLLM pass for entity consistency / refinement (user-triggered)
+  window_sec: 8.0           # split each video into windows of at most this many seconds; every
+                            # window gets its own dense, temporally-grounded MLLM call (batched).
+                            # Main lever for triplet density + fine-grained temporal grounding.
+                            # Set 0 to disable (one call over the whole clip).
+  normalize_pass: true      # run the refinement pass by default: GLOBAL entity normalization
+                            # (unify vague variants like man/person/individual, propagate names
+                            # across windows) + dedup + quality filter. Used when a caller does
+                            # not explicitly pass a normalize flag.
   default_output: "json"    # json | overlay
   tokens_per_frame: 256     # estimated tokens consumed per sampled frame (Qwen3-VL ~256 typical)
   prompt_overhead_tokens: 4096  # reserved tokens for prompt text + response
@@ -40,8 +48,9 @@ validation:
   default_db: "default"     # default fact database name
   fps: 1.0                   # frame sampling rate (frames per second) for video validation input
   min_frames: 4              # never sample fewer than this many frames from a video
-  embed_model: "Qwen/Qwen3-VL-Embedding-2B"   # embedding model for fact retrieval
-  embed_backend: "transformers"         # "transformers" | "vllm"
+  embed_model: "Qwen/Qwen3-VL-Embedding-2B"   # multimodal embedding model for fact retrieval
+  embed_backend: "transformers"         # "transformers" (multimodal) | "vllm" (text-only)
+  embed_device: "cuda:1"                # pin embedder to 2nd GPU (MLLM/Whisper use cuda:0)
   embed_max_length: 8192                # max token length for the encoder
   embed_batch_size: 32                  # texts per forward pass (transformers backend)
 

@@ -43,7 +43,8 @@ class BaseMLLM:
             for r in requests
         ]
 
-    def generate_text(self, user_prompt: str, system_prompt: Optional[str] = None) -> str:
+    def generate_text(self, user_prompt: str, system_prompt: Optional[str] = None,
+                      max_tokens: Optional[int] = None) -> str:
         """Text-only generation for refinement / normalization prompts."""
         raise NotImplementedError
 
@@ -51,12 +52,13 @@ class BaseMLLM:
         self,
         user_prompts: List[str],
         system_prompts: Optional[List[Optional[str]]] = None,
+        max_tokens: Optional[int] = None,
     ) -> List[str]:
         """Batched text-only generation. Default falls back to sequential."""
         if system_prompts is None:
             system_prompts = [None] * len(user_prompts)
         return [
-            self.generate_text(up, system_prompt=sp)
+            self.generate_text(up, system_prompt=sp, max_tokens=max_tokens)
             for up, sp in zip(user_prompts, system_prompts)
         ]
 
@@ -159,7 +161,11 @@ class VLLMBackend(BaseMLLM):
         return self.SamplingParams(
             max_tokens=self.max_new_tokens,
             temperature=self.temperature,
-            repetition_penalty=1.15,
+            # Mild penalty only: windowed extraction keeps each call short, and a
+            # dense comprehensive graph legitimately repeats subjects/relations
+            # (e.g. the same group across many rows). An aggressive penalty here
+            # suppresses that and caps recall.
+            repetition_penalty=1.1,
         )
 
     def generate_batch(self, requests: List[Dict[str, Any]]) -> List[List[Triplet]]:
@@ -191,10 +197,11 @@ class VLLMBackend(BaseMLLM):
         outputs = self.llm.generate(vllm_reqs, sampling_params=sampling)
         return [out.outputs[0].text for out in outputs]
 
-    def generate_text(self, user_prompt: str, system_prompt: Optional[str] = None) -> str:
+    def generate_text(self, user_prompt: str, system_prompt: Optional[str] = None,
+                      max_tokens: Optional[int] = None) -> str:
         # Allow enough room to re-emit a full quintuple list during normalization.
         sampling = self.SamplingParams(
-            max_tokens=self.max_new_tokens,
+            max_tokens=max_tokens or self.max_new_tokens,
             temperature=0.0,
             repetition_penalty=1.1,
         )
@@ -206,11 +213,12 @@ class VLLMBackend(BaseMLLM):
         self,
         user_prompts: List[str],
         system_prompts: Optional[List[Optional[str]]] = None,
+        max_tokens: Optional[int] = None,
     ) -> List[str]:
         if not user_prompts:
             return []
         sampling = self.SamplingParams(
-            max_tokens=self.max_new_tokens,
+            max_tokens=max_tokens or self.max_new_tokens,
             temperature=0.0,
             repetition_penalty=1.1,
         )
@@ -352,8 +360,16 @@ class TransformersVLBackend(BaseMLLM):
             results.append(validate_triplets(trips))
         return results
 
-    def generate_text(self, user_prompt: str, system_prompt: Optional[str] = None) -> str:
-        return self._run_one(user_prompt, None, None, system_prompt=system_prompt)
+    def generate_text(self, user_prompt: str, system_prompt: Optional[str] = None,
+                      max_tokens: Optional[int] = None) -> str:
+        if max_tokens is None:
+            return self._run_one(user_prompt, None, None, system_prompt=system_prompt)
+        old = self.max_new_tokens
+        self.max_new_tokens = max_tokens
+        try:
+            return self._run_one(user_prompt, None, None, system_prompt=system_prompt)
+        finally:
+            self.max_new_tokens = old
 
     def generate_raw(
         self,

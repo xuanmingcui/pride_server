@@ -37,7 +37,7 @@ async def start_scenegraph(
     system_prompt_override: Optional[str] = Form(None),
     user_prompt_override: Optional[str] = Form(None),
     raw_output: bool = Form(False),
-    normalize: bool = Form(False),
+    normalize: Optional[bool] = Form(None),
 ):
     """Submit a scene-graph task; returns {task_id} for polling."""
     services = _svc(request)

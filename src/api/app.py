@@ -20,6 +20,7 @@ from src.api.routes import validation as val_routes
 from src.api.routes import database as db_routes
 from src.api.routes import tasks as task_routes
 from src.api.routes import prompts as prompt_routes
+from src.api.routes import misinfo as misinfo_routes
 
 _FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend"
 
@@ -52,6 +53,7 @@ def create_app(services: ModelServices) -> FastAPI:
     app.include_router(db_routes.router, prefix="/api")
     app.include_router(task_routes.router, prefix="/api")
     app.include_router(prompt_routes.router, prefix="/api")
+    app.include_router(misinfo_routes.router, prefix="/api")  # proxy -> misinfo service (:8090)
 
     if _FRONTEND_DIR.exists():
         app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")

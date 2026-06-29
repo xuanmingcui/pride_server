@@ -135,6 +135,42 @@ def shift_quintuples(quints: List[Quintuple], offset_sec: float,
     return out
 
 
+def merge_quintuples(quints: List[Quintuple], gap_sec: float = 1.0) -> List[Quintuple]:
+    """Merge identical (subject, relation, object) rows with touching time windows.
+
+    Groups rows by case-insensitive (s, r, o) and collapses any whose windows
+    overlap or sit within ``gap_sec`` of each other into a single row spanning
+    [min start, max end]. This removes the degenerate pattern where an MLLM
+    emits the same relationship many times in micro-stepped windows
+    (0.0-0.2, 0.2-0.4, …) across a static shot, while preserving genuinely
+    separated re-occurrences of the same relationship as distinct rows.
+    The first-seen surface form (casing) of each group is kept; group order
+    follows first appearance.
+    """
+    from collections import OrderedDict
+
+    groups: "OrderedDict[tuple, list]" = OrderedDict()
+    forms: Dict[tuple, Triplet] = {}
+    for s, r, o, t0, t1 in quints:
+        key = (s.lower(), r.lower(), o.lower())
+        groups.setdefault(key, []).append((float(t0), float(t1)))
+        forms.setdefault(key, (s, r, o))
+
+    out: List[Quintuple] = []
+    for key, spans in groups.items():
+        spans.sort()
+        s, r, o = forms[key]
+        cur_s, cur_e = spans[0]
+        for t0, t1 in spans[1:]:
+            if t0 <= cur_e + gap_sec:
+                cur_e = max(cur_e, t1)
+            else:
+                out.append((s, r, o, cur_s, cur_e))
+                cur_s, cur_e = t0, t1
+        out.append((s, r, o, cur_s, cur_e))
+    return out
+
+
 def validate_quintuples(quints: List[Quintuple]) -> List[Quintuple]:
     seen: set = set()
     cleaned: List[Quintuple] = []
@@ -328,12 +364,142 @@ def build_normalize_prompt(trips: List[Triplet]) -> PromptPair:
     return _render_pair("normalize", None, {"triplets": lines})
 
 
-def build_normalize_quintuples_prompt(quints: List[Quintuple]) -> PromptPair:
+def build_canonicalize_entities_prompt(quints: List[Quintuple]) -> PromptPair:
+    """Prompt the model for a compact {surface_form: canonical_name} entity map.
+
+    The whole graph is given as context (input), but the model only emits a small
+    JSON map (output) — so it never truncates the way re-emitting the full graph
+    does. The map is applied deterministically by ``apply_entity_map``.
+    """
+    facts = "\n".join(f"- ({s}, {r}, {o})" for s, r, o, _t0, _t1 in quints)
+    nodes: List[str] = []
+    seen: set = set()
+    for s, r, o, _t0, _t1 in quints:
+        for n in (s, o):
+            if n.lower() not in seen:
+                seen.add(n.lower())
+                nodes.append(n)
+    mentions = "\n".join(f"- {n}" for n in nodes)
+    return _render_pair("canonicalize_entities", None, {"facts": facts, "mentions": mentions})
+
+
+def parse_entity_map(text: str) -> Dict[str, str]:
+    """Parse a JSON object of {surface_form: canonical_name} from model output.
+
+    Tries strict JSON first, then a forgiving regex over "key": "value" pairs so
+    markdown fences, trailing commas, comments, or a truncated closing brace do
+    not lose the whole map.
+    """
+    import json
+
+    raw = text.strip()
+    body = raw
+    if "{" in body and "}" in body:
+        body = body[body.find("{") : body.rfind("}") + 1]
+    out: Dict[str, str] = {}
+    try:
+        obj = json.loads(body)
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
+                    out[k] = v.strip()
+    except Exception:
+        pass
+    if out:
+        return out
+    # Regex fallback: capture every "key": "value" pair from the raw text.
+    for k, v in re.findall(r'"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"', raw):
+        k2 = k.replace('\\"', '"').strip()
+        v2 = v.replace('\\"', '"').strip()
+        if k2 and v2:
+            out[k2] = v2
+    return out
+
+
+def apply_entity_map(quints: List[Quintuple], mapping: Dict[str, str]) -> List[Quintuple]:
+    """Rewrite subject/object surface forms using a case-insensitive canonical map."""
+    m = {k.lower(): v for k, v in mapping.items()}
+    out: List[Quintuple] = []
+    for s, r, o, t0, t1 in quints:
+        out.append((m.get(s.lower(), s), r, m.get(o.lower(), o), t0, t1))
+    return out
+
+
+# Vague placeholder nodes that are never a real, groundable entity. Rows whose
+# subject or object is one of these are dropped deterministically.
+_PRONOUN_NODES = {
+    "they", "them", "it", "he", "she", "someone", "somebody", "something",
+    "this", "that", "these", "those", "we", "us", "you", "i", "one", "ones",
+}
+
+
+def drop_ungrounded_rows(quints: List[Quintuple]) -> List[Quintuple]:
+    """Drop rows whose subject or object is a bare pronoun / vague placeholder."""
+    out: List[Quintuple] = []
+    for s, r, o, t0, t1 in quints:
+        if s.strip().lower() in _PRONOUN_NODES or o.strip().lower() in _PRONOUN_NODES:
+            continue
+        out.append((s, r, o, t0, t1))
+    return out
+
+
+_LEVEL_RULE_HIGH = (
+    "- LOW-LEVEL TRIVIA (this is a HIGH-LEVEL graph): remove trivial physical / appearance "
+    "details that carry no narrative, identifying, or contextual significance — e.g. plain "
+    "clothing colors (\"wears black shirt\"), generic posture, mundane object colors. KEEP "
+    "attributes that identify or contextualize: a name, role/title, nationality/community, "
+    "uniform, religious dress, a held sign/weapon/flag, on-screen text, or location."
+)
+
+
+def build_quality_filter_prompt(quints: List[Quintuple], mode: str = "high") -> PromptPair:
+    """Prompt the model for a compact list of row numbers (1-based) to remove."""
+    numbered = "\n".join(
+        f"{i}. ({s}, {r}, {o})" for i, (s, r, o, _t0, _t1) in enumerate(quints, 1)
+    )
+    level_rule = _LEVEL_RULE_HIGH if mode == "high" else ""
+    return _render_pair(
+        "quality_filter", None,
+        {"numbered": numbered, "mode": mode, "level_rule": level_rule},
+    )
+
+
+def parse_int_list(text: str) -> List[int]:
+    """Parse a JSON / Python list of integers from model output."""
+    text = text.strip()
+    if "[" in text and "]" in text:
+        text = text[text.find("[") : text.rfind("]") + 1]
+    try:
+        obj = ast.literal_eval(text)
+    except Exception:
+        return [int(n) for n in re.findall(r"-?\d+", text)]
+    if isinstance(obj, (list, tuple, set)):
+        out: List[int] = []
+        for x in obj:
+            try:
+                out.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        return out
+    return []
+
+
+def drop_rows_by_number(quints: List[Quintuple], drop_numbers: List[int]) -> List[Quintuple]:
+    """Drop rows by 1-based index (as emitted by build_quality_filter_prompt)."""
+    drop = {n for n in drop_numbers if 1 <= n <= len(quints)}
+    if not drop:
+        return quints
+    return [q for i, q in enumerate(quints, 1) if i not in drop]
+
+
+def build_normalize_quintuples_prompt(quints: List[Quintuple], mode: str = "high") -> PromptPair:
     lines = "\n".join(
         f"- ({s}, {r}, {o}, {float(t0):.2f}, {float(t1):.2f})"
         for s, r, o, t0, t1 in quints
     )
-    return _render_pair("normalize_quintuples", None, {"quintuples": lines})
+    level_rule = _LEVEL_RULE_HIGH if mode == "high" else ""
+    return _render_pair("normalize_quintuples", None,
+                        {"quintuples": lines, "level_rule": level_rule})
 
 
 def build_validation_prompt(claim: str, facts: List[str]) -> PromptPair:
