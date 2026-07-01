@@ -489,7 +489,7 @@ class SceneGraphPipeline:
         if prog:
             prog.start("identity")
         identity = self._identify_subjects(
-            video_path, duration, transcript_text, user_text, temperature,
+            video_path, duration, transcript_text, user_text, temperature, mode,
         )
         if identity:
             log.info("Identity/summary note: %s", identity[:200])
@@ -537,25 +537,32 @@ class SceneGraphPipeline:
 
     def _identify_subjects(
         self, video_path: str, duration: float, transcript_text: str,
-        user_text: str, temperature: Optional[float],
+        user_text: str, temperature: Optional[float], mode: str = "high",
     ) -> str:
-        """Short who-is-who / who-is-speaking note from frames + transcript.
+        """Short overall summary + who-is-who note from frames + transcript.
 
-        One multimodal call over ~10 frames sampled across the whole clip. Kept
-        short on purpose (low max_tokens) since Qwen3-VL tends to over-explain.
-        Returns "" on any failure so the caller falls back to no identity note.
+        One multimodal call over frames sampled across the whole clip. Framed by
+        mode: high → who-is-who / claim attribution (misinfo route); low →
+        concrete event/activity summary (surveillance route). Kept short on
+        purpose (low max_tokens) since Qwen3-VL tends to over-explain. Returns ""
+        on any failure so the caller falls back to no identity note.
         """
+        # Sample ~1 frame/sec across the whole clip (capped) so the front pass can
+        # actually SEE fine-grained action (a crawl, a reach, a concealment) rather
+        # than a handful of stills that misread motion as a static pose. This note
+        # grounds every downstream window, so its accuracy matters a lot.
+        cap = min(self._max_frames_per_call(), 32)
         frames, eff_fps = sample_frames(
-            video_path, fps=0.01, start_sec=0.0, end_sec=duration,
-            min_frames=10, max_frames=12,
+            video_path, fps=1.0, start_sec=0.0, end_sec=duration,
+            min_frames=min(16, cap), max_frames=cap,
         )
         if not frames:
             return ""
-        pair = build_identify_subjects_prompt(transcript_text, user_text)
+        pair = build_identify_subjects_prompt(transcript_text, user_text, mode)
         try:
             text = self.backend.generate_raw(
                 pair["user"], frames=frames, fps=eff_fps,
-                max_tokens=400, system_prompt=pair["system"],
+                max_tokens=512, system_prompt=pair["system"],
             )
         except Exception as e:
             log.warning("Identity pre-pass failed: %s", e)

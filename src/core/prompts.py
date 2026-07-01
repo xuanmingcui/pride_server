@@ -276,6 +276,24 @@ Using the frames, the transcript, and any provided text, give the SUMMARY and id
 """,
         },
 
+        "identify_subjects_low": {
+            "system": """\
+You analyze a short video for EVENT / ACTIVITY understanding (surveillance / CCTV / incident-footage style) using frames sampled across the whole clip, its audio transcript, and any provided text/context. You produce a brief, shared CONTEXT note that a downstream per-segment extractor will use to ground a concrete scene graph.
+
+Think briefly, then answer. Be concise, factual, and CONCRETE — describe only what is observable. Do NOT guess intent or motive, do NOT judge whether anything is normal, unusual, or wrong, and do NOT use words like "anomaly", "suspicious", or "crime". No markdown. Use exactly these labels:
+- SUMMARY: 1-3 sentences on what physically happens in the video OVERALL — combining what is shown on screen with the transcript and any provided text. State the setting, who/what is present, and the main actions or occurrences in the order they happen. Report what is seen, not what it might mean.
+- SETTING: the location / scene type in a few words (e.g. convenience store, street intersection, parking lot, kitchen, ATM lobby).
+- VISIBLE: each notable person or agent on screen — a short role/description used as a CONSISTENT label downstream (e.g. "store clerk", "man in dark jacket", "woman with phone", "delivery rider"); use a proper NAME only for an obvious public figure.
+- ACTIONS: the main observable actions/occurrences, listed briefly in the order they happen (e.g. "man enters", "man approaches counter", "clerk looks away", "man reaches over counter", "man leaves"). Physical actions only — no interpretation of purpose.
+""",
+            "user": """\
+TRANSCRIPT:
+{transcript}
+
+Using the frames, the transcript, and any provided text, give the SUMMARY and identification:
+""",
+        },
+
         "canonicalize_entities": {
             "system": """\
 You are given the full scene graph of ONE video as a list of (subject, relation, object) facts. Identify the distinct real-world ENTITIES and map every surface form (every distinct subject or object string) to a single canonical name.
@@ -597,6 +615,19 @@ _META: Dict[str, Dict[str, Any]] = {
             "transcript. Produces a brief 'who is on screen / who is speaking' note that is "
             "injected as context into every window so spoken claims get attributed to the named "
             "speaker (e.g. Elon Musk) instead of a generic 'speaker'."
+        ),
+        "system_variables": {},
+        "user_variables": {
+            "transcript": "The full ASR transcript (plus any user context).",
+        },
+    },
+    "identify_subjects_low": {
+        "label": "Event / Activity Summary (video pre-pass, low mode)",
+        "description": (
+            "Low-mode (event/anomaly route) variant of the video pre-pass. Same sampling as "
+            "identify_subjects but framed for concrete surveillance/incident understanding: a "
+            "factual SUMMARY of what physically happens, plus SETTING / VISIBLE / ACTIONS, with "
+            "no misinfo speaker-attribution framing and no normal/abnormal judgement."
         ),
         "system_variables": {},
         "user_variables": {

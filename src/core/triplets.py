@@ -382,12 +382,20 @@ def build_normalize_prompt(trips: List[Triplet]) -> PromptPair:
     return _render_pair("normalize", None, {"triplets": lines})
 
 
-def build_identify_subjects_prompt(transcript_text: str, user_text: str = "") -> PromptPair:
-    """Prompt for the short who-is-who / who-is-speaking pre-pass (frames + ASR)."""
+def build_identify_subjects_prompt(
+    transcript_text: str, user_text: str = "", mode: str = "high",
+) -> PromptPair:
+    """Prompt for the short video pre-pass (frames + ASR).
+
+    High mode → who-is-who / who-is-speaking framing (misinfo route: attributes
+    spoken claims to the presenter). Low mode → concrete event/activity framing
+    for surveillance/incident understanding, no normal/abnormal judgement.
+    """
     t = (transcript_text or "").strip() or "(no speech detected)"
     if user_text:
         t = f"{t}\n\nADDITIONAL CONTEXT:\n{user_text}"
-    return _render_pair("identify_subjects", None, {"transcript": t})
+    key = "identify_subjects_low" if mode == "low" else "identify_subjects"
+    return _render_pair(key, None, {"transcript": t})
 
 
 def build_canonicalize_entities_prompt(quints: List[Quintuple]) -> PromptPair:
