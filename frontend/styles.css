@@ -326,6 +326,32 @@ textarea { resize: vertical; min-height: 90px; font-family: inherit; }
 .stage-row.running .stage-state { color: var(--accent); }
 .stage-row.done .stage-state { color: var(--success); }
 
+/* ── Transcript block (results) ─────────────────────────────────── */
+.transcript-box {
+  margin: 10px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.transcript-box > summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  font-size: .8rem;
+  color: var(--text-muted);
+  user-select: none;
+}
+.transcript-box[open] > summary { border-bottom: 1px solid var(--border); }
+.transcript-text {
+  padding: 10px 12px;
+  font-size: .82rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 /* ── Results panel ──────────────────────────────────────────────── */
 .result-header {
   display: flex;

@@ -43,17 +43,31 @@ def extract_triplets_from_text(text: str) -> List[Triplet]:
 # Validation / normalization
 # ---------------------------------------------------------------------------
 
+# Strips stray leading/trailing dashes, bullets, and separators an MLLM
+# sometimes leaves on a node (e.g. "narrator -" → "narrator"). Internal hyphens
+# (e.g. "anti-immigrant") and periods (e.g. "U.S.") are preserved.
+_EDGE_JUNK = re.compile(r"^[\s\-–—:;,·•*]+|[\s\-–—:;,·•*]+$")
+
+
+def _clean_node(x: str) -> str:
+    return _EDGE_JUNK.sub("", re.sub(r"\s+", " ", x).strip())
+
+
 def validate_triplets(trips: List[Triplet]) -> List[Triplet]:
-    """Deduplicate and remove malformed triplets (empty fields, overly long nodes)."""
+    """Deduplicate and remove malformed triplets (empty/self-loop, overly long nodes)."""
     seen: set = set()
     cleaned: List[Triplet] = []
     for s, r, o in trips:
-        s = re.sub(r"\s+", " ", s).strip()
-        r = re.sub(r"\s+", " ", r).strip()
-        o = re.sub(r"\s+", " ", o).strip()
+        s = _clean_node(s)
+        r = _clean_node(r)
+        o = _clean_node(o)
         if not s or not r or not o:
             continue
         if len(s) > 100 or len(r) > 80 or len(o) > 100:
+            continue
+        if s.lower() == o.lower():  # drop self-loops ("scene is scene")
+            continue
+        if s.lower() == "anomaly":  # low mode: describe behavior, don't label "anomaly"
             continue
         key = (s.lower(), r.lower(), o.lower())
         if key not in seen:
@@ -175,12 +189,16 @@ def validate_quintuples(quints: List[Quintuple]) -> List[Quintuple]:
     seen: set = set()
     cleaned: List[Quintuple] = []
     for s, r, o, t0, t1 in quints:
-        s = re.sub(r"\s+", " ", s).strip()
-        r = re.sub(r"\s+", " ", r).strip()
-        o = re.sub(r"\s+", " ", o).strip()
+        s = _clean_node(s)
+        r = _clean_node(r)
+        o = _clean_node(o)
         if not s or not r or not o:
             continue
         if len(s) > 100 or len(r) > 80 or len(o) > 100:
+            continue
+        if s.lower() == o.lower():  # drop self-loops ("scene is scene")
+            continue
+        if s.lower() == "anomaly":  # low mode: describe behavior, don't label "anomaly"
             continue
         key = (s.lower(), r.lower(), o.lower(), round(t0, 3), round(t1, 3))
         if key not in seen:

@@ -132,6 +132,7 @@ async def start_scenegraph(
                 "is_temporal":  is_temporal,
                 "raw_output":   raw_output,
                 "segments":     segments_out,
+                "transcript":   raw.get("transcript", ""),
                 "overlay_path": raw.get("overlay_path"),
                 "overlay_error": raw.get("overlay_error"),
             }

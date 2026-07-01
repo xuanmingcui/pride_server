@@ -49,8 +49,9 @@ EXTRACT THESE LAYERS (cover every one that applies):
 4. ACTIONS & INTERACTIONS: who does what to whom.
 5. SETTING & PLACE CUES: location type, country/city indicators (flags, architecture, signage language), time of day.
 6. ON-SCREEN TEXT CLAIMS: e.g. ("on-screen caption", "claims", "..."); ("sign", "reads", "...").
-7. HIGH-LEVEL EVENTS & NARRATIVE: the overall message the image conveys.
-8. FRAMING, STANCE & SENTIMENT: the rhetorical framing and its target, emotional tone, implied message — e.g. ("image", "portrays", "Indian immigrants as a threat"), ("narrative", "targets", "Indian community"). Ground these in concrete visible evidence.
+7. INFERRED SITUATION, EVENT & ATMOSPHERE: go beyond the literal to the higher-level phenomenon the cues imply. When several cues converge, name the underlying event and mood — e.g. toppled shelves + fallen goods + fleeing shoppers → ("scene", "depicts", "earthquake"), ("situation", "is", "chaotic"); smoke + flames → ("scene", "depicts", "fire"); banners + raised fists → ("event", "is", "protest"). Capture qualitative descriptors (chaotic, panicked, tense, celebratory). Ground each inference in cues you actually see; hedge ("appears to be", "likely") when suggestive but not certain, omit when unsupported. This is inference from evidence, NOT fabrication.
+8. HIGH-LEVEL EVENTS & NARRATIVE: the overall message the image conveys.
+9. FRAMING, STANCE & SENTIMENT: the rhetorical framing and its target, emotional tone, implied message — e.g. ("image", "portrays", "Indian immigrants as a threat"), ("narrative", "targets", "Indian community"). Ground these in concrete visible evidence.
 
 NAMING & SPECIFICITY (avoid vague, generic nodes)
 - Make every entity as SPECIFIC as the evidence allows. If a person's NAME appears anywhere — in a caption, lower-third, on-screen text, or provided context — use that name, not a bare "man"/"woman"/"person".
@@ -83,34 +84,25 @@ Extract a comprehensive scene graph. Read any on-screen text. Output scene graph
 
         "scenegraph_visual_low": {
             "system": """\
-You are a visual scene graph extractor focused on concrete, observable relationships.
+You are a concrete visual scene-graph extractor specialized for EVENT and ANOMALY DETECTION (surveillance / incident-image style). You analyze an image (or a small set of frames) and extract observable physical facts, with special attention to actions and ANY abnormal or notable occurrence.
 
-Your task is to analyze an image or a small set of video frames provided by the user and extract the most important physical, spatial, and visual relationships.
+EXTRACT THESE LAYERS (cover every one that applies):
+1. ENTITIES & ATTRIBUTES: concrete physical entities — people (generic labels like "man"/"woman"/"worker" fine), objects, vehicles, animals, locations — and notable physical state ("broken", "open", "on fire", "overturned", "crowded", count, color).
+2. SPATIAL relations: "stands next to", "is on", "is inside", "near", "in front of", "is located in", "blocks".
+3. ACTIONS: what people/objects are doing — "runs", "falls", "carries", "grabs", "climbs", "pushes".
+4. PERSON–OBJECT INTERACTIONS & HANDLING — for every person, what they do with objects, as fine-grained as visible (always emit these; they are the building blocks for behavior inference): "picks up", "takes", "grabs", "holds", "carries", "removes from", "takes from shelf", "puts in pocket", "puts in bag", "conceals", "hides under jacket", "hands to". Name the object and from/to where when visible — e.g. ("man", "takes", "bottle from shelf"), ("man", "puts", "bottle into jacket").
+5. EVENTS & NOTABLE BEHAVIOR — describe what is happening DIRECTLY, with the most specific concrete verb, as an ordinary (subject, relation, object) row. Do NOT emit meta rows like ("anomaly", "is", ...) or ("event", "is", ...) and do NOT use the word "anomaly" — downstream decides if a behavior is unusual. Cover: falls/collapse ("man", "lies motionless on", "ground"), fights/assault ("man", "punches", "another man"), theft/shoplifting as the action ("man", "conceals", "item in jacket"; "man", "steals", "phone"), grabbing, breaking/vandalism, fire/smoke ("smoke", "rises from", "car engine"), a weapon ("man", "holds", "knife"). Use the intent verb when confident ("steals", "fights"); hedge otherwise ("appears to take").
 
-Rules:
-1. FOCUS ON VISUAL/PHYSICAL RELATIONSHIPS: how objects and people are positioned, what actions are being performed, what attributes (color, size, state) are notable.
-2. SUBJECTS AND OBJECTS must be concrete physical entities: people (by appearance or role if unnamed), objects, animals, vehicles, locations. Generic labels like "man", "woman", "dog", "car" are fine.
-3. RELATIONS must be physical/visual/spatial: "sits on", "holds", "stands next to", "wears", "runs toward", "places on", "looks at", "carries", "opens", "is located in", "is part of", "is colored", "points at".
-4. AVOID abstract political or social concepts unless they are physically depicted (e.g., a flag or sign in the frame).
-5. One triplet per distinct observable relationship. Prioritize visually prominent or action-defining ones.
-6. CONSISTENT NAMING: use the same label for the same entity across all triplets.
-7. OUTPUT: ONLY a Python list of (subject, relation, object) 3-tuples. No markdown, no explanation.
+RULES
+- Stay CONCRETE and physical. Do NOT add abstract political/social framing (that is for high mode). Do NOT emit "anomaly"/"event" meta rows — describe behaviors directly with verbs.
+- CONSISTENT NAMING: same label for the same entity across all triplets. Prioritize action- and behavior-defining relationships over static decor.
+- OUTPUT: ONLY a Python list of (subject, relation, object) 3-tuples. No markdown, no explanation.
 
-Example of GOOD output (concrete, visual):
+Example of GOOD output (direct behavior verbs, no "anomaly" rows):
 [
-  ("man", "sits on", "chair"),
-  ("woman", "holds", "coffee cup"),
-  ("dog", "runs toward", "ball"),
-  ("child", "wears", "red backpack"),
-  ("car", "is parked in front of", "building"),
-  ("cat", "lies on top of", "table"),
-]
-
-Example of BAD output (abstract — do NOT do this):
-[
-  ("government", "announces", "new policy"),
-  ("CEO", "negotiates", "merger"),
-  ("protesters", "demand", "reform"),
+  ("man", "lies motionless on", "sidewalk"),
+  ("bystanders", "gather around", "man"),
+  ("smoke", "rises from", "car engine"),
 ]
 """,
             "user": """\
@@ -137,8 +129,9 @@ EXTRACT THESE LAYERS (cover every one that applies):
 5. SETTING & PLACE CUES: location type, country/city indicators (flags, architecture, language on signs), time of day, weather.
 6. ON-SCREEN TEXT CLAIMS: e.g. ("on-screen caption", "claims", "Indians are taking over Singapore", ...); ("overlay text", "reads", "...", ...).
 7. SPOKEN CLAIMS from the transcript, when present — ATTRIBUTE each claim to the person identified as the speaker in the CONTEXT / "WHO IS WHO" note: use their name as the subject (e.g. ("Elon Musk", "claims", "the badges give cash prizes")). If the speaker is an unnamed voiceover, use "narrator". Break a long claim into several short atomic triplets rather than one long sentence-object.
-8. HIGH-LEVEL EVENTS & NARRATIVE: the overall story or message the clip conveys.
-9. FRAMING, STANCE & SENTIMENT: the rhetorical framing and its target, emotional tone, implied message or call to action — e.g. ("video", "portrays", "Indian immigrants as a threat", ...), ("narrative", "targets", "Indian community", ...), ("clip", "promotes", "anti-immigrant sentiment", ...). These inferred relations are essential; ground them in concrete on-screen evidence.
+8. INFERRED SITUATION, EVENT & ATMOSPHERE: go beyond the literal action to the higher-level phenomenon the cues imply. When several cues point the same way, name the underlying event and the mood/condition — do not stop at "people running". E.g. shaking shelves + falling objects + people fleeing a store → ("scene", "depicts", "earthquake"), ("store", "is", "shaking"), ("crowd", "reacts with", "panic"), ("situation", "is", "chaotic"); smoke + flames + evacuation → ("scene", "depicts", "fire"); raised fists + banners + marching → ("event", "is", "protest"). Capture qualitative descriptors (chaotic, panicked, tense, celebratory, violent, peaceful) and the inferred cause/event. Each inference MUST be grounded in cues you actually see; if the cues are suggestive but not conclusive, hedge the relation ("appears to be", "likely", "possibly") instead of asserting it; if there is no real support, omit it.
+9. HIGH-LEVEL EVENTS & NARRATIVE: the overall story or message the clip conveys.
+10. FRAMING, STANCE & SENTIMENT: the rhetorical framing and its target, emotional tone, implied message or call to action — e.g. ("video", "portrays", "Indian immigrants as a threat", ...), ("narrative", "targets", "Indian community", ...), ("clip", "promotes", "anti-immigrant sentiment", ...). These inferred relations are essential; ground them in concrete on-screen evidence.
 
 NAMING & SPECIFICITY (avoid vague, generic nodes)
 - Make every entity as SPECIFIC as the evidence allows. If a person's NAME appears anywhere — spoken in the transcript, or written in a caption, lower-third, or on-screen text — use that name (e.g. "Zaqy Mohamad", not "man").
@@ -156,9 +149,10 @@ PRECISION (do not fabricate — wrong triplets are worse than missing ones)
 - Respect entity TYPES. Only people (or animals) can be the subject of agentive relations like "speaks", "shakes hands with", "holds", "carries", "walks", "looks at", "points at". Inanimate things (aircraft, buildings, signs, vehicles) CANNOT speak, shake hands, or hold things. A microphone belongs to / is held by a person, not by an aircraft.
 - Never swap the subject and object roles. The subject must be the entity actually performing or possessing the relation.
 - If you cannot confidently identify the agent, the object, or that they truly co-occur, OMIT that row.
+- INFERENCE vs FABRICATION: inferring the situation/atmosphere/event from MULTIPLE converging cues (layer 8) is encouraged and is NOT fabrication. Fabrication is inventing entities or facts with no support. When an inference is plausible but not certain, keep it with a hedging relation ("appears to be", "likely") rather than dropping it.
 
 COVERAGE
-- Within those precision constraints, be thorough: capture the distinct entities, attributes, counts, actions, spatial relations, on-screen text, and framing that are actually present. Prefer a smaller set of correct, grounded relationships over many speculative ones. Do NOT pad with repetition or guesses.
+- Within those precision constraints, be thorough: capture the distinct entities, attributes, counts, actions, spatial relations, on-screen text, INFERRED situation/atmosphere, and framing that are actually present. Prefer correct, grounded relationships over speculative ones. Do NOT pad with repetition or unsupported guesses.
 
 OUTPUT: ONLY a Python list of (subject, relation, object, start_sec, end_sec) 5-tuples. No markdown, no prose, no explanation.
 
@@ -181,38 +175,37 @@ Extract a comprehensive scene graph. Read any on-screen text. Output scene graph
 
         "scenegraph_video_low": {
             "system": """\
-You are a visual scene graph extractor focused on concrete, observable relationships.
+You are a concrete visual scene-graph extractor specialized for EVENT and ANOMALY DETECTION (surveillance / CCTV / incident-footage style). You analyze a video clip (plus any transcript/context) and extract observable physical facts, with special attention to actions, motion, state changes, and ANY abnormal or notable occurrence — each grounded in a temporal window.
 
-Your task is to analyze a video clip (and, when provided, its audio transcript or extra context) given by the user, and extract the most important physical, spatial, and visual relationships — each grounded in a temporal window.
+EXTRACT THESE LAYERS (cover every one that applies):
+1. ENTITIES & ATTRIBUTES: concrete physical entities — people (generic labels like "man"/"woman"/"worker" are fine), objects, vehicles, animals, locations — and notable physical state (count, color, "broken", "open", "on fire", "overturned", "crowded").
+2. SPATIAL relations: "stands next to", "is on", "is inside", "near", "in front of", "is located in", "blocks".
+3. ACTIONS & MOTION (temporal): what each entity does and how it changes over the clip — "walks toward", "runs from", "enters", "exits", "approaches", "drops", "picks up", "opens", "pushes", "climbs". Capture the dynamics, not just static positions.
+4. PERSON–OBJECT INTERACTIONS & HANDLING — capture for EVERY person what they do with objects, as fine-grained as visible. These are the building blocks downstream uses to infer behavior, so always emit them even if you cannot name a higher-level event: "picks up", "takes", "grabs", "holds", "carries", "puts down", "places on", "removes from", "takes from shelf", "puts in pocket", "puts in bag", "conceals", "hides under jacket", "hands to", "returns to shelf", "scans", "pays at". Always state WHAT object and from/to WHERE when visible — e.g. ("man", "takes", "bottle from shelf"), ("man", "puts", "bottle into jacket"), ("woman", "hands", "bag to child").
+5. EVENTS & NOTABLE BEHAVIOR — describe what happens DIRECTLY, using the most specific concrete verb the evidence supports, as an ordinary (subject, relation, object) row. Do NOT emit meta rows like ("anomaly", "is", ...) or ("event", "is", ...) and do NOT use the word "anomaly" — a downstream system decides whether a described behavior is unusual; your job is only to describe it accurately. Cover: falls/collapses ("man", "collapses on", "floor"), fights/assault ("man", "fights", "another man"; "man", "punches", "guard"), running/fleeing ("shopper", "runs toward", "exit"), theft/shoplifting stated as the action itself ("man", "steals", "phone"; "man", "conceals", "item in jacket"; "man", "walks out with", "unpaid item"), grabbing/snatching, breaking/vandalism, fire/smoke ("smoke", "fills", "room"), a weapon ("man", "holds", "knife"), a motionless person ("man", "lies motionless on", "ground"). When confident, use the intent verb ("steals", "fights", "vandalizes"); when only the physical act is clear, describe that and hedge ("appears to take", "takes without paying").
 
-Rules:
-1. FOCUS ON VISUAL/PHYSICAL RELATIONSHIPS: how objects and people are positioned, what actions are being performed, what attributes (color, size, state) are notable.
-2. SUBJECTS AND OBJECTS must be concrete physical entities: people (by appearance or role if unnamed), objects, animals, vehicles, locations. Generic labels like "man", "woman", "dog", "car" are fine.
-3. RELATIONS must be physical/visual/spatial: "sits on", "holds", "stands next to", "wears", "runs toward", "places on", "looks at", "carries", "opens", "is located in", "is part of", "is colored", "points at".
-4. TEMPORAL GROUNDING: for each relationship, estimate the start and end SECOND of the video at which the relationship is observed. Both values must be floats with 0.0 <= start_sec <= end_sec <= video duration (the duration is given in the user message).
-5. AVOID abstract political or social concepts unless they are physically depicted (e.g., a flag or sign in the frame).
-6. CONSISTENT NAMING: use the same label for the same entity across all quintuples.
-7. Aim for roughly 5–25 high-quality, non-redundant quintuples for a typical clip; more for long videos with many distinct events.
-8. OUTPUT: ONLY a Python list of (subject, relation, object, start_sec, end_sec) 5-tuples. No markdown, no explanation.
+RULES
+- Stay CONCRETE and physical. Do NOT add abstract political/social framing or narrative interpretation (that is for high mode). Do NOT emit "anomaly"/"event" meta rows — describe behaviors directly with verbs instead.
+- TEMPORAL GROUNDING: for each row give start_sec and end_sec floats with 0.0 <= start_sec <= end_sec <= the clip duration; localize each event to when it actually happens.
+- CONSISTENT NAMING: same label for the same entity across all rows. Emit each relationship once over the interval it holds (no micro-stepped duplicates).
+- Be thorough on actions/interactions/events; do not pad with repetition.
+- OUTPUT: ONLY a Python list of (subject, relation, object, start_sec, end_sec) 5-tuples. No markdown, no explanation.
 
-Example of GOOD output (concrete, visual, with times in seconds):
+Example of GOOD output — shoplifting scene (fine-grained handling rows + direct behavior verbs let downstream infer theft; NO "anomaly" row):
 [
-  ("man", "sits on", "chair", 0.0, 4.2),
-  ("woman", "holds", "coffee cup", 1.0, 3.5),
-  ("dog", "runs toward", "ball", 2.0, 5.0),
-  ("car", "is parked in front of", "building", 0.0, 8.0),
-]
-
-Example of BAD output (abstract — do NOT do this):
-[
-  ("government", "announces", "new policy", 0.0, 5.0),
-  ("CEO", "negotiates", "merger", 0.0, 5.0),
+  ("man", "stands at", "store shelf", 0.0, 3.0),
+  ("storekeeper", "faces away from", "man", 1.0, 5.0),
+  ("man", "takes", "item from shelf", 2.0, 3.5),
+  ("man", "looks around", "store", 3.0, 4.0),
+  ("man", "conceals", "item in jacket", 3.5, 5.0),
+  ("man", "walks toward", "exit", 5.0, 8.0),
+  ("man", "walks out with", "unpaid item", 6.0, 8.0),
 ]
 """,
             "user": """\
 The video is {segment_duration_sec:.2f} seconds long.{transcript_section}{user_text_section}
 
-Output scene graph quintuples:
+Output scene graph quintuples — capture every person-object interaction (who takes/holds/conceals what) and describe all actions and events directly with concrete verbs (no "anomaly" rows):
 """,
         },
 
@@ -252,8 +245,9 @@ Rules:
 1. Focus on physical/spatial/visual relationships: positions, actions, attributes, and interactions between tangible entities.
 2. Subjects and objects should be concrete physical entities: people (generic labels OK), objects, animals, vehicles, places.
 3. Use physical relation phrases: "sits on", "holds", "stands next to", "wears", "carries", "opens", "is located in", "runs toward".
-4. Avoid abstract political, social, or conceptual relationships.
-5. OUTPUT: ONLY a Python list of 3-tuples. No extra text.
+4. CONCRETE EVENTS & BEHAVIOR: describe any physical event or behavior the text mentions DIRECTLY with concrete verbs — falls, fights, fire/smoke, running/fleeing, theft, a weapon — e.g. ("building", "is on", "fire"), ("people", "flee from", "building"), ("man", "steals", "phone"). Do NOT emit ("anomaly", "is", ...) or ("event", "is", ...) meta rows and do NOT use the word "anomaly"; downstream decides what is unusual.
+5. Avoid abstract political, social, or conceptual framing (that is for high mode).
+6. OUTPUT: ONLY a Python list of 3-tuples. No extra text.
 """,
             "user": """\
 TEXT:
@@ -433,6 +427,7 @@ QUALITY FILTER
 - Drop low-information quintuples: tautologies, vague descriptors ("man stands"), and anything you would not consider a fact worth recording.
 - Drop quintuples whose subject or object cannot be identified confidently, or is a bare pronoun / placeholder ("they", "someone", "person", "individual", "it", "thing").
 - KEEP attributed spoken claims: a row whose relation is claims/says/promotes/announces/advertises and whose subject is a named person or "narrator"/"voiceover" is valuable — never drop it as low-information, and never drop it for naming the speaker "narrator".
+- KEEP inferred situation / event / atmosphere rows — higher-level inferences such as ("scene", "depicts", "earthquake"), ("situation", "is", "chaotic"), ("crowd", "reacts with", "panic"), ("event", "is", "protest"), including hedged ones ("appears to be", "likely"). Treat abstract nodes like "scene"/"situation"/"event"/"environment"/"atmosphere" as valid here; do not drop these as vague.
 {level_rule}
 
 TIMESTAMPS

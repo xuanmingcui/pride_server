@@ -79,7 +79,6 @@ $$('.tab-btn').forEach(btn => {
     btn.classList.add('active');
     $(`#tab-${btn.dataset.tab}`).classList.add('active');
     if (btn.dataset.tab === 'validate') loadDatabasesIntoSelect('#val-database');
-    if (btn.dataset.tab === 'misinfo') loadDatabasesIntoSelect('#mi-database');
     if (btn.dataset.tab === 'video') loadVideoLibrary();
     if (btn.dataset.tab === 'databases') refreshDatabaseSelector();
   });
@@ -301,6 +300,18 @@ function renderSceneGraph(result, taskId) {
     chips.innerHTML += `<span class="chip" style="color:var(--accent);border-color:var(--accent)">refined</span>`;
   }
   container.appendChild(chips);
+
+  // Audio transcript (ASR) — collapsible, so spoken-claim triplets can be
+  // sanity-checked against what was actually said (incl. non-English audio).
+  const transcript = (result.transcript || '').trim();
+  if (transcript) {
+    const det = document.createElement('details');
+    det.className = 'transcript-box';
+    det.innerHTML =
+      `<summary>Audio transcript (${transcript.length} chars)</summary>` +
+      `<div class="transcript-text">${escapeHtml(transcript)}</div>`;
+    container.appendChild(det);
+  }
 
   // Overlay video/image
   if (hasOverlay) {
@@ -969,6 +980,91 @@ function renderMisinfo(result, container) {
   container.innerHTML = chips + table;
 }
 
+// Render the result of a graph-decomposition verification
+// (verifier.single_prompt_decomposition): list every decomposed sub-claim with
+// its supporting / refuting evidence (and scores) and a final score
+// (support − refute) that decides whether the sub-claim is supported or refuted.
+function renderMisinfoDecomposition(result, container) {
+  if (!result) { container.innerHTML = '<div class="report-text">No result returned.</div>'; return; }
+  if (result.error) {
+    container.innerHTML = `<div class="report-text" style="color:#c0392b">Error: ${esc(result.error)}</div>`;
+    return;
+  }
+
+  const pred = result.prediction || '—';
+  const overallColor = pred === 'SUPPORTED' ? '#1a9850' : '#c0392b';
+  const subs = result.subclaim_verifications || [];
+
+  const overall =
+    `<div class="chips">` +
+    `<span class="chip">Overall: <strong style="color:${overallColor}">${esc(pred)}</strong></span>` +
+    `<span class="chip">Sub-claims: <strong>${subs.length}</strong></span>` +
+    `</div>`;
+
+  if (!subs.length) {
+    container.innerHTML = overall +
+      `<div class="report-text" style="opacity:.6;margin-top:8px">Claim could not be decomposed into sub-claims.</div>`;
+    return;
+  }
+
+  // Build one block per decomposed sub-claim.
+  const blocks = subs.map((sv, idx) => {
+    const support = new Set(sv.support_indices || []);
+    const refute = new Set(sv.refute_indices || []);
+    const ri = sv.retrieval_info || {};
+    const docIds = ri.doc_id_list || [];
+    const rawScores = ri.score_list || [];
+    const maxScore = rawScores.length ? Math.max(...rawScores.map(Number)) : 0;
+    const norm = (s) => (maxScore > 0 ? Number(s) / maxScore : 0);
+
+    const lines = (sv.evidence || '').split('\n').filter(l => l.trim() !== '');
+    const evRow = (i) => {
+      const docId = docIds[i] != null ? esc(String(docIds[i])) : '';
+      const score = rawScores[i] != null ? norm(rawScores[i]).toFixed(2) : '';
+      const text = (lines[i] || '').replace(/^\s*\d+\.\s*/, '');
+      return `<li style="margin:2px 0">` +
+        `<span style="font-size:12px;opacity:.7">${docId}${score ? ` (${score})` : ''}</span> ` +
+        `${esc(text)}</li>`;
+    };
+
+    const supportRows = [...support].filter(i => i < lines.length).map(evRow).join('');
+    const refuteRows = [...refute].filter(i => i < lines.length).map(evRow).join('');
+
+    // Final score = summed supporting evidence score − summed refuting evidence score.
+    const supportScore = (sv.support_weight != null)
+      ? Number(sv.support_weight)
+      : [...support].filter(i => i < rawScores.length).reduce((a, i) => a + norm(rawScores[i]), 0);
+    const refuteScore = (sv.refute_weight != null)
+      ? Number(sv.refute_weight)
+      : [...refute].filter(i => i < rawScores.length).reduce((a, i) => a + norm(rawScores[i]), 0);
+    const finalScore = supportScore - refuteScore;
+    const verdict = finalScore >= 0 ? 'SUPPORTED' : 'REFUTED';
+    const vColor = finalScore >= 0 ? '#1a9850' : '#c0392b';
+
+    const sBlock = supportRows
+      ? `<div style="margin-top:6px"><div style="color:#1a9850;font-weight:600;font-size:12px">Supporting (${supportScore.toFixed(2)})</div>` +
+        `<ul style="margin:4px 0 0;padding-left:18px;font-size:13px">${supportRows}</ul></div>`
+      : `<div style="margin-top:6px;color:#1a9850;font-weight:600;font-size:12px">Supporting (0.00)<span style="font-weight:400;opacity:.6"> — none</span></div>`;
+    const rBlock = refuteRows
+      ? `<div style="margin-top:6px"><div style="color:#c0392b;font-weight:600;font-size:12px">Refuting (${refuteScore.toFixed(2)})</div>` +
+        `<ul style="margin:4px 0 0;padding-left:18px;font-size:13px">${refuteRows}</ul></div>`
+      : `<div style="margin-top:6px;color:#c0392b;font-weight:600;font-size:12px">Refuting (0.00)<span style="font-weight:400;opacity:.6"> — none</span></div>`;
+
+    return `<div class="card" style="margin-top:12px;padding:12px">` +
+      `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap">` +
+        `<div style="font-weight:600">${idx + 1}. ${esc(sv.subclaim || '')}</div>` +
+        `<div style="white-space:nowrap">` +
+          `<span class="chip">Final: <strong style="color:${vColor}">${finalScore >= 0 ? '+' : ''}${finalScore.toFixed(2)}</strong></span>` +
+          `<span class="chip">Verdict: <strong style="color:${vColor}">${verdict}</strong></span>` +
+        `</div>` +
+      `</div>` +
+      sBlock + rBlock +
+      `</div>`;
+  }).join('');
+
+  container.innerHTML = overall + blocks;
+}
+
 $('#mi-submit').addEventListener('click', async () => {
   const container = $('#mi-result');
   const btn = $('#mi-submit');
@@ -982,10 +1078,13 @@ $('#mi-submit').addEventListener('click', async () => {
   const topk = $('#mi-topk').value;
   if (topk !== '') body.top_k = Math.max(1, Math.floor(Number(topk)));
 
-  container.innerHTML = '<div class="report-text">Verifying…</div>';
+  const isGraph = $('#mi-mode').value === 'graph';
+  const endpoint = isGraph ? '/api/misinfo/verify_decomposition' : '/api/misinfo/verify';
+
+  container.innerHTML = `<div class="report-text">${isGraph ? 'Decomposing & verifying…' : 'Verifying…'}</div>`;
   btn.disabled = true;
   try {
-    const r = await fetch('/api/misinfo/verify', {
+    const r = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -995,7 +1094,8 @@ $('#mi-submit').addEventListener('click', async () => {
       throw new Error(err.error || err.load_error || `HTTP ${r.status}`);
     }
     const result = await r.json();
-    renderMisinfo(result, container);
+    if (isGraph) renderMisinfoDecomposition(result, container);
+    else renderMisinfo(result, container);
   } catch (e) {
     container.innerHTML = `<div class="report-text" style="color:#c0392b">Error: ${esc(e.message)}</div>`;
   } finally {

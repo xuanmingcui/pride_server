@@ -45,6 +45,8 @@ from src.bot.commands.help_cmd import HelpCog
 from src.bot.commands.prompts_cmd import PromptsCog
 from src.bot.commands.scenegraph_cmd import SceneGraphCog
 from src.bot.commands.validate_cmd import ValidateCog
+from src.bot.commands.video_library_cmd import VideoLibraryCog
+from src.bot.commands.misinfo_cmd import MisinfoCog
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -65,6 +67,7 @@ class PrideBot(commands.Bot):
         self.embedder    = None
         self.db          = None
         self.val_pipeline = None
+        self.video_index = None
 
     async def setup_hook(self) -> None:
         if self._services is not None:
@@ -81,12 +84,15 @@ class PrideBot(commands.Bot):
         self.embedder    = svc.embedder
         self.db          = svc.db
         self.val_pipeline = svc.val_pipeline
+        self.video_index = svc.video_index
 
         # Register cogs
         await self.add_cog(HelpCog(self))
         await self.add_cog(SceneGraphCog(self))
         await self.add_cog(ValidateCog(self))
         await self.add_cog(PromptsCog(self))
+        await self.add_cog(VideoLibraryCog(self))
+        await self.add_cog(MisinfoCog(self))
 
         guild_id = self.cfg.get("discord", {}).get("guild_id")
         if guild_id:

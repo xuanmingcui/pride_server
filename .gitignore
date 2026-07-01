@@ -31,6 +31,7 @@ src/misinfo/datasets/
 # Logs
 *.log
 logs/
+*.mp4
 
 # IDE / OS
 .DS_Store

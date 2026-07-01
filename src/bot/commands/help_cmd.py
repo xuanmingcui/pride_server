@@ -20,10 +20,30 @@ _HELP_EMBED.add_field(
         "Extract a structured scene graph (subject → relation → object triplets) "
         "from a **video**, **image**, or **text**.\n"
         "Optionally returns an annotated overlay video/image.\n"
-        "**Options:** `media` · `text` · `output_type` (json/overlay) · "
+        "**Options:** `media` · `text` · `output_type` (json/overlay/raw) · "
         "`mode` (high/low) · `temperature` · `fps` · `normalize`\n"
-        "• **high** — semantic, named entities & events (news/documentary)\n"
-        "• **low**  — physical objects, positions & actions (everyday video)"
+        "• **high** — semantic, named entities, events & inferred situation (news/documentary)\n"
+        "• **low**  — physical objects, actions & anomaly/event detection (CCTV/everyday)\n"
+        "Shows live progress; returns the ASR transcript alongside the graph."
+    ),
+    inline=False,
+)
+
+_HELP_EMBED.add_field(
+    name="🎞️  Video Library",
+    value=(
+        "`/video_index media:<video>` — generate a scene graph and add the video to the searchable library\n"
+        "`/video_search query:<text>` — find indexed videos whose scene graph matches a query\n"
+        "**Search options:** `top_k` · `facet` (people/location/action/text/framing) · `keyword` · `min_score`"
+    ),
+    inline=False,
+)
+
+_HELP_EMBED.add_field(
+    name="🧪  /misinfo",
+    value=(
+        "Fact-check a claim against the misinfo knowledge base (GraphCheck).\n"
+        "**Options:** `claim` · `top_k` · `mode` (standard / graph decomposition)"
     ),
     inline=False,
 )

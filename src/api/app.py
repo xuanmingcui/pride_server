@@ -26,7 +26,13 @@ from src.api.routes import video_library as video_routes
 _FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend"
 
 
-def create_app(services: ModelServices) -> FastAPI:
+def create_app(services: ModelServices, *, misinfo_router=None) -> FastAPI:
+    """Build the PRIDE FastAPI app.
+
+    ``misinfo_router`` lets a caller (run_combine.py) inject an in-process misinfo
+    router that talks to a verifier sharing the main vLLM engine. When omitted
+    (run_all.py), the HTTP proxy to the standalone misinfo service (:8090) is used.
+    """
     app = FastAPI(
         title="PRIDE API",
         version="1.0.0",
@@ -54,7 +60,10 @@ def create_app(services: ModelServices) -> FastAPI:
     app.include_router(db_routes.router, prefix="/api")
     app.include_router(task_routes.router, prefix="/api")
     app.include_router(prompt_routes.router, prefix="/api")
-    app.include_router(misinfo_routes.router, prefix="/api")  # proxy -> misinfo service (:8090)
+    if misinfo_router is not None:
+        app.include_router(misinfo_router, prefix="/api")     # in-process, shared LLM (run_combine.py)
+    else:
+        app.include_router(misinfo_routes.router, prefix="/api")  # proxy -> misinfo service (:8090)
     app.include_router(video_routes.router, prefix="/api")
 
     if _FRONTEND_DIR.exists():

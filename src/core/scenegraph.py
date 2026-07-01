@@ -70,6 +70,15 @@ _GENERIC_SPEAKER_SUBJECTS = {
     "video", "the clip", "clip", "announcer", "the announcer", "the speaker in the video",
 }
 
+# Subjects that denote a SPEAKING VOICE specifically. With no audio narration these
+# are hallucinated, so rows with such a subject are dropped when there is no
+# transcript. (Narrower than _GENERIC_SPEAKER_SUBJECTS, which includes valid
+# framing nodes like "narrative"/"video" that should NOT be dropped.)
+_VOICE_SUBJECTS = {
+    "narrator", "the narrator", "voiceover", "voice-over", "voice over", "voice",
+    "speaker", "the speaker", "announcer", "the announcer", "the speaker in the video",
+}
+
 
 def _parse_attribute_to(identity_text: str) -> str:
     """Extract the designated claim-attribution name from the identity note.
@@ -446,6 +455,9 @@ class SceneGraphPipeline:
             full_text = get_full_text(asr_segments)
             log.info("Transcript: %d ASR segment(s), %d chars.", len(asr_segments), len(full_text))
             transcript_text = full_text
+            # Split over-long merged segments so spoken claims get tighter
+            # timestamps and per-window text isn't duplicated across many windows.
+            asr_segments = self._split_long_segments(asr_segments, self.window_sec)
             if prog:
                 prog.done("audio", f"{len(asr_segments)} segment(s)" if asr_segments
                           else "no speech detected")
@@ -484,10 +496,10 @@ class SceneGraphPipeline:
             speaker_name = _parse_attribute_to(identity)
             if speaker_name:
                 log.info("Spoken claims will be attributed to: %s", speaker_name)
+            attr_clause = ", and attribute spoken claims accordingly" if transcript_text else ""
             context = (
                 "VIDEO CONTEXT (overall summary + who-is-who, identified from the WHOLE "
-                "video; use this to interpret this segment, use these names, and attribute "
-                f"spoken claims accordingly):\n{identity}"
+                f"video; use this to interpret this segment, use these names{attr_clause}):\n{identity}"
                 + (f"\n\n{user_text}" if user_text else "")
             )
         if prog:
@@ -615,6 +627,41 @@ class SceneGraphPipeline:
         if progress:
             progress.done("transcript", f"{n} segment(s), {len(out)} claim(s)")
         log.info("ASR claim extraction: %d segment(s) → %d triplet(s).", n, len(out))
+        return out
+
+    @staticmethod
+    def _split_long_segments(asr_segments: List[Dict], max_len: float) -> List[Dict]:
+        """Split ASR segments longer than ``max_len`` into smaller sub-segments.
+
+        Whisper (with VAD) sometimes merges continuous speech into one very long
+        segment (e.g. 13–121s), which makes spoken-claim timestamps coarse and
+        duplicates the same text across many windows. We split such a segment into
+        time slices of at most ``max_len`` seconds, distributing its words evenly
+        by count across the slices (an approximation — Whisper speech is roughly
+        steady-paced — that is far better than one blanket window).
+        """
+        if max_len <= 0:
+            return asr_segments
+        out: List[Dict] = []
+        for seg in asr_segments:
+            s = float(seg.get("start", 0.0))
+            e = float(seg.get("end", 0.0))
+            text = (seg.get("text") or "").strip()
+            dur = e - s
+            words = text.split()
+            if dur <= max_len or len(words) < 2:
+                out.append(seg)
+                continue
+            k = int(math.ceil(dur / max_len))
+            per = max(1, int(math.ceil(len(words) / k)))
+            groups = [words[i:i + per] for i in range(0, len(words), per)]
+            ng = len(groups)
+            for i, g in enumerate(groups):
+                out.append({
+                    "start": s + dur * i / ng,
+                    "end":   s + dur * (i + 1) / ng,
+                    "text":  " ".join(g),
+                })
         return out
 
     @staticmethod
@@ -762,12 +809,18 @@ class SceneGraphPipeline:
         elif prog:
             prog.done("transcript", "no speech")
 
-        # Deterministic backstop: rewrite generic "narrator"/"narrative"/"speaker"
-        # subjects to the identified figure (e.g. Elon Musk) so spoken claims are
-        # attributed even when the model defaulted to a placeholder. Runs across
-        # both video- and transcript-derived rows, before refinement unifies them.
+        # Speaker handling:
+        #  - named speaker → rewrite generic "narrator"/"speaker" subjects to that
+        #    name so spoken claims are attributed even if the model used a placeholder;
+        #  - no named speaker AND no transcript → drop voice-subject rows entirely
+        #    (a "narrator" with no audio narration is hallucinated).
         if speaker_name:
             seg_quints = [self._attribute_speaker(seg, speaker_name) for seg in seg_quints]
+        elif not transcript_text:
+            seg_quints = [
+                [q for q in seg if q[0].strip().lower() not in _VOICE_SUBJECTS]
+                for seg in seg_quints
+            ]
 
         if want_normalize:
             if prog:

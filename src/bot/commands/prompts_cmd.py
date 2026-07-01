@@ -30,11 +30,16 @@ from src.bot.commands.scenegraph_cmd import _download_attachment, _cleanup
 
 # Template name choices — must match keys in prompts._DEFAULTS
 _PROMPT_CHOICES = [
-    app_commands.Choice(name="scenegraph_visual_high — Scene Graph (visual, high-level)", value="scenegraph_visual_high"),
-    app_commands.Choice(name="scenegraph_visual_low  — Scene Graph (visual, low-level)",  value="scenegraph_visual_low"),
+    app_commands.Choice(name="scenegraph_visual_high — Scene Graph (image, high-level)",  value="scenegraph_visual_high"),
+    app_commands.Choice(name="scenegraph_visual_low  — Scene Graph (image, low/anomaly)", value="scenegraph_visual_low"),
+    app_commands.Choice(name="scenegraph_video_high  — Scene Graph (video, high-level)",  value="scenegraph_video_high"),
+    app_commands.Choice(name="scenegraph_video_low   — Scene Graph (video, low/anomaly)", value="scenegraph_video_low"),
     app_commands.Choice(name="scenegraph_text_high   — Scene Graph (text-only, high)",    value="scenegraph_text_high"),
     app_commands.Choice(name="scenegraph_text_low    — Scene Graph (text-only, low)",     value="scenegraph_text_low"),
-    app_commands.Choice(name="normalize              — Entity Normalization Pass",         value="normalize"),
+    app_commands.Choice(name="identify_subjects      — Speaker/Summary pre-pass",         value="identify_subjects"),
+    app_commands.Choice(name="canonicalize_entities  — Entity Canonicalization",          value="canonicalize_entities"),
+    app_commands.Choice(name="normalize_quintuples   — Refinement (video quintuples)",    value="normalize_quintuples"),
+    app_commands.Choice(name="normalize              — Refinement (triplets)",            value="normalize"),
     app_commands.Choice(name="validation             — Fact Validation Report",           value="validation"),
 ]
 

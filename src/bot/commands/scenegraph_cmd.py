@@ -11,9 +11,12 @@ Workflow:
 """
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import os
 import tempfile
+import time
 from typing import Optional
 
 import aiohttp
@@ -21,6 +24,27 @@ import aiofiles
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+_STAGE_ICON = {"done": "✅", "running": "⏳", "pending": "⬜"}
+
+
+def _fmt_stages(stages) -> str:
+    """Render the pipeline stage list as a compact Discord checklist."""
+    out = []
+    for s in stages or []:
+        ic = _STAGE_ICON.get(s.get("state"), "⬜")
+        name = s.get("label", s.get("key"))
+        extra = ""
+        if s.get("state") == "running":
+            if s.get("determinate"):
+                extra = f" — {round(s.get('percent', 0))}%"
+            d = s.get("detail")
+            if d:
+                extra += (" — " if not extra else " · ") + d
+        elif s.get("state") == "done" and s.get("detail"):
+            extra = f" — {s['detail']}"
+        out.append(f"{ic} {name}{extra}")
+    return "\n".join(out)
 
 
 class SceneGraphCog(commands.Cog):
@@ -36,7 +60,7 @@ class SceneGraphCog(commands.Cog):
     @app_commands.describe(
         media="Video (mp4) or image file to analyse.",
         text="Text input or extra context (used alone or combined with media).",
-        output_type="Output format: 'json' (default) or 'overlay' (annotated video/image).",
+        output_type="Output format: 'json' (default), 'overlay' (annotated video/image), or 'raw' (model text).",
         mode="Scene graph mode: 'high' for semantic/news (default), 'low' for physical/visual.",
         temperature="Sampling temperature (default from config, e.g. 0.8).",
         fps="Frame sampling rate (frames per second; default from config, e.g. 1.0). Per-call frame count = ceil(window_seconds × fps), clamped by min_frames and the context budget.",
@@ -47,6 +71,7 @@ class SceneGraphCog(commands.Cog):
         output_type=[
             app_commands.Choice(name="json",    value="json"),
             app_commands.Choice(name="overlay", value="overlay"),
+            app_commands.Choice(name="raw",     value="raw"),
         ],
         mode=[
             app_commands.Choice(name="high — semantic / named entities / events (default)", value="high"),
@@ -78,6 +103,31 @@ class SceneGraphCog(commands.Cog):
         out_dir  = cfg["paths"]["output_dir"]
         max_mb   = cfg["discord"]["max_upload_mb"]
 
+        raw_output = output_type == "raw"
+        eff_output = "overlay" if output_type == "overlay" else "json"
+
+        # Live progress: edit the deferred reply with the stage checklist as the
+        # pipeline reports it. The callback runs in the ML worker thread, so we
+        # marshal the edit back onto the bot's event loop, throttled to avoid
+        # Discord rate limits (only on stage change, ≥1.2s apart).
+        loop = asyncio.get_running_loop()
+        _pstate = {"sig": None, "ts": 0.0}
+
+        def _progress(percent, stage, detail, stages):
+            sig = tuple(
+                (s["key"], s["state"], round(s.get("percent", 0) / 10) if s.get("determinate") else 0)
+                for s in stages
+            )
+            now = time.monotonic()
+            if sig == _pstate["sig"] or (now - _pstate["ts"]) < 1.2:
+                return
+            _pstate["sig"], _pstate["ts"] = sig, now
+            content = "**Scene Graph** — processing…\n" + _fmt_stages(stages)
+            fut = asyncio.run_coroutine_threadsafe(
+                interaction.edit_original_response(content=content), loop
+            )
+            fut.add_done_callback(lambda f: f.exception())  # swallow edit errors
+
         try:
             # Download attachment
             media_path: Optional[str] = None
@@ -86,7 +136,7 @@ class SceneGraphCog(commands.Cog):
 
             # Run pipeline (blocking → thread pool)
             out_path: Optional[str] = None
-            if output_type == "overlay" and media_path:
+            if eff_output == "overlay" and media_path:
                 ext = ".mp4" if not _is_image(media_path) else ".png"
                 out_path = tempfile.mktemp(suffix=f"_sg_overlay{ext}", dir=out_dir)
 
@@ -95,13 +145,39 @@ class SceneGraphCog(commands.Cog):
                 self.bot.sg_pipeline.process,
                 media_path=media_path,
                 text=text or "",
-                output_type=output_type,
+                output_type=eff_output,
                 output_path=out_path,
                 mode=_mode,
                 temperature=temperature,
                 fps=fps,
                 normalize=normalize,
+                raw_output=raw_output,
+                progress_cb=_progress,
             )
+
+            transcript = (result.get("transcript") or "").strip()
+
+            # Raw mode: reply with the model's raw text (per segment if temporal).
+            if raw_output:
+                segs = result.get("segments", [])
+                if segs:
+                    parts = []
+                    for seg in segs:
+                        hdr = f"# [{seg.get('start')}-{seg.get('end')}]"
+                        parts.append(f"{hdr}\n{seg.get('raw_text', '')}")
+                    raw_text = "\n\n".join(parts)
+                else:
+                    raw_text = result.get("raw_text", "")
+                files = [discord.File(fp=io.BytesIO(raw_text.encode()), filename="scene_graph_raw.txt")]
+                if transcript:
+                    files.append(discord.File(fp=io.BytesIO(transcript.encode()),
+                                              filename="transcript.txt"))
+                await interaction.followup.send(
+                    f"**Scene Graph (raw)** — {len(segs) or 1} block(s)"
+                    + (f" · transcript {len(transcript)} chars" if transcript else ""),
+                    files=files,
+                )
+                return
 
             # Format response. Video segments carry quintuples (s, r, o, start_sec, end_sec);
             # image / text-only carry triplets (s, r, o).
@@ -126,9 +202,18 @@ class SceneGraphCog(commands.Cog):
             kind = f"{len(segments)} segment(s)" if is_temporal else "image/text"
             unit = "quintuple" if is_temporal else "triplet"
             msg_lines = [f"**Scene Graph** — {kind}, {total_items} {unit}(s)"]
+            if transcript:
+                msg_lines.append(f"🗣️ transcript: {len(transcript)} chars (attached)")
 
             overlay_path = result.get("overlay_path")
             overlay_err  = result.get("overlay_error")
+
+            # Transcript attachment (parity with the web transcript panel).
+            extra_files = []
+            if transcript:
+                extra_files.append(
+                    discord.File(fp=io.BytesIO(transcript.encode()), filename="transcript.txt")
+                )
 
             if output_type == "json" or not overlay_path:
                 if is_temporal:
@@ -146,6 +231,8 @@ class SceneGraphCog(commands.Cog):
                     json_data = {
                         "triplets": [_fmt_item(t) for t in flat_trips],
                     }
+                if transcript:
+                    json_data["transcript"] = transcript
                 json_bytes = json.dumps(json_data, ensure_ascii=False, indent=2).encode()
 
                 if overlay_err:
@@ -153,7 +240,8 @@ class SceneGraphCog(commands.Cog):
 
                 await interaction.followup.send(
                     "\n".join(msg_lines),
-                    file=discord.File(fp=__import__("io").BytesIO(json_bytes), filename="scene_graph.json"),
+                    files=[discord.File(fp=io.BytesIO(json_bytes), filename="scene_graph.json"),
+                           *extra_files],
                 )
             else:
                 # Attach overlay file
@@ -168,12 +256,13 @@ class SceneGraphCog(commands.Cog):
                     ).encode()
                     await interaction.followup.send(
                         "\n".join(msg_lines),
-                        file=discord.File(fp=__import__("io").BytesIO(json_bytes), filename="scene_graph.json"),
+                        files=[discord.File(fp=io.BytesIO(json_bytes), filename="scene_graph.json"),
+                               *extra_files],
                     )
                 else:
                     await interaction.followup.send(
                         "\n".join(msg_lines),
-                        file=discord.File(overlay_path),
+                        files=[discord.File(overlay_path), *extra_files],
                     )
 
         except Exception as e:
