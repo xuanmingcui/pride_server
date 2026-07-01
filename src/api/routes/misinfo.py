@@ -2,7 +2,7 @@
 
 The misinfo GraphCheck backend runs in its own conda env / process (see
 src/misinfo/serve.py, default http://127.0.0.1:8090) because its deps
-(vllm + pyserini + numpy 1.26) are incompatible with run_all.py's env. This
+(vllm + pyserini + numpy 1.26) are incompatible with run.py's env. This
 router lets the single-origin SPA reach it without CORS or a second base URL.
 
 Override the upstream with the MISINFO_UPSTREAM env var.

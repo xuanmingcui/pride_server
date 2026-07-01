@@ -3,8 +3,7 @@
 # Copy .env.example → .env and fill in your values before running.
 #
 # Usage:
-#   Web server only:          docker compose --profile web up
-#   Web server + Discord bot: docker compose --profile all up
+#   docker compose up            # Discord bot + web + misinfo, one shared vLLM
 #
 # DATA_DIR controls where the ChromaDB database is stored on your machine.
 # Set it in .env, e.g.:  DATA_DIR=/mnt/storage/pride-db
@@ -14,37 +13,11 @@
 
 services:
 
-  # ── Web server only ────────────────────────────────────────────────────────
-  pride-web:
+  # ── Main entry: Discord bot + web + misinfo (one shared vLLM) ───────────────
+  pride:
     image: pride-server:latest
     build: .
-    profiles: [web]
-    command: ["python", "run_web.py", "--host", "0.0.0.0", "--port", "8080"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-    env_file:
-      - .env
-    volumes:
-      - hf_cache:/workspace/.cache/huggingface
-      - torch_cache:/workspace/.cache/torch
-      - ${DATA_DIR:-./pride-data}:/app/data
-    ports:
-      - "8080:8080"
-    restart: unless-stopped
-
-  # ── Web server + Discord bot ───────────────────────────────────────────────
-  pride-all:
-    image: pride-server:latest
-    build: .
-    profiles: [all]
-    command: ["python", "run_all.py", "--host", "0.0.0.0", "--port", "8080"]
+    command: ["python", "run.py", "--host", "0.0.0.0", "--port", "8080"]
     deploy:
       resources:
         reservations:

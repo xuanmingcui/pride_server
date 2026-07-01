@@ -37,8 +37,7 @@ RUN pip install --no-cache-dir \
 COPY src/       ./src/
 COPY frontend/  ./frontend/
 COPY config.yaml   .
-COPY run_web.py    .
-COPY run_all.py    .
+COPY run.py        .
 
 # Pre-create runtime and ML-cache directories so volume mounts initialise cleanly
 RUN mkdir -p \
@@ -53,7 +52,6 @@ RUN mkdir -p \
 
 EXPOSE 8080
 
-# Default: web-only server.
-# Override with "python run_all.py" (or use the 'all' Compose profile)
-# to also run the Discord bot — requires DISCORD_TOKEN in the environment.
-CMD ["python", "run_web.py", "--host", "0.0.0.0", "--port", "8080"]
+# Main entry: Discord bot + web + misinfo on one shared vLLM.
+# Requires DISCORD_TOKEN in the environment.
+CMD ["python", "run.py", "--host", "0.0.0.0", "--port", "8080"]

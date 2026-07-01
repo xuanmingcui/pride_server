@@ -86,8 +86,7 @@ Both capabilities are exposed via a **web UI** (FastAPI + SPA) and a **Discord b
 pride_server/
 ├── config.yaml              # Main configuration (see Configuration)
 ├── requirements.txt         # Python dependencies
-├── run_web.py               # Launch web server only
-├── run_all.py               # Launch web server + Discord bot together
+├── run.py                   # Main entry: Discord bot + web + misinfo, one shared vLLM
 │
 ├── frontend/
 │   ├── index.html           # Single-page app (3 tabs)
@@ -136,26 +135,20 @@ pride_server/
 
 ## Entry Points
 
-### `run_web.py` — Web server only
+### `run.py` — Main entry (Discord bot + web + misinfo, one shared vLLM)
 
 ```
-python run_web.py [--host 0.0.0.0] [--port 8080]
+DISCORD_TOKEN=your_token python run.py [--host 0.0.0.0] [--port 8080]
 ```
 
-Loads `ModelServices`, creates the FastAPI app, and starts uvicorn with `loop="none"` so the existing asyncio event loop is reused.
+Loads `ModelServices` once (a single vLLM engine), then runs the FastAPI server (`uvicorn.Server.serve()` with `loop="none"`), the Discord bot (`PrideBot.start()`), and the in-process misinfo verifier — all sharing the one model — concurrently via `asyncio.gather()`. Requires `DISCORD_TOKEN` in the environment.
 
-### `run_all.py` — Web server + Discord bot
-
-```
-python run_all.py [--host 0.0.0.0] [--port 8080]
-```
-
-Loads `ModelServices` once, then runs both `uvicorn.Server.serve()` and `PrideBot.start()` concurrently via `asyncio.gather()`. Requires `DISCORD_TOKEN` in the environment.
+**ML cache location** is configurable via env (or `.env`): set `PRIDE_CACHE_DIR` (default `/workspace/.cache`). run.py applies it to `HF_HOME`, `TORCH_HOME`, `VLLM_CACHE_ROOT`, `TMPDIR`, etc. before any ML import; an explicitly-exported `HF_HOME`/`TORCH_HOME`/… still takes precedence. (This is separate from `paths.tmp_dir` in `config.yaml`, the app's downloaded-media directory.)
 
 ### Hot-reloading (development)
 
 ```
-python -m jurigged -w src/ run_web.py
+python -m jurigged -w src/ run.py
 ```
 
 [jurigged](https://github.com/breuleux/jurigged) patches changed function bodies in-place without restarting the process, so GPU models stay loaded. Suitable for iterating on prompts, pipeline logic, and API routes. Changes to imports or class structure still require a restart.
@@ -225,7 +218,7 @@ discord:
 
 ### `src/services.py`
 
-Container for all loaded models. Both entry points call `await ModelServices.create(cfg)` once and pass the result around.
+Container for all loaded models. The entry point (`run.py`) calls `await ModelServices.create(cfg)` once and passes the result around.
 
 ```python
 @dataclass
@@ -737,14 +730,15 @@ File uploads are capped at `discord.max_upload_mb` (default 10 MB). Overlays exc
 # Install dependencies
 pip install -r requirements.txt
 
-# Web server only
-python run_web.py --port 8080
+# Start the server (Discord bot + web + misinfo, one shared vLLM)
+DISCORD_TOKEN=your_token python run.py --port 8080
 
-# Web server + Discord bot
-DISCORD_TOKEN=your_token python run_all.py --port 8080
+# Relocate all ML caches / temp files (optional)
+PRIDE_CACHE_DIR=/data/.cache PRIDE_TMP_DIR=/data/tmp \
+    DISCORD_TOKEN=your_token python run.py --port 8080
 
 # Development: hot-patch code without restarting (GPU models stay loaded)
-python -m jurigged -w src/ run_web.py --port 8080
+python -m jurigged -w src/ run.py --port 8080
 ```
 
 ### Accessing remotely (Vast.ai / Docker)
@@ -820,10 +814,12 @@ nano .env
 
 | Variable | Required | Description |
 |---|---|---|
-| `DISCORD_TOKEN` | Only for the `all` profile | Your Discord bot token |
+| `DISCORD_TOKEN` | Yes | Your Discord bot token |
+| `HUGGING_FACE_HUB_TOKEN` | Only for gated models | HuggingFace access token |
+| `PRIDE_CACHE_DIR` | No | Base dir for ML caches + scratch tmp (default `/workspace/.cache`) |
 | `DATA_DIR` | No | Host path for the database (defaults to `./pride-data` next to `docker-compose.yml`) |
 
-Any `PRIDE_*` config override from the [Configuration](#configuration) section can also go here.
+`.env` holds only secrets and storage locations. All model / pipeline settings (model name, backend, fps, temperature, whisper, paths, …) live in `config.yaml` — edit them there.
 
 #### 3. Build the image
 
@@ -835,16 +831,10 @@ Takes 5–15 minutes on first run while Python packages are installed. Model wei
 
 #### 4. Run
 
-**Web server only** (no Discord bot):
+The stack runs as a single service (Discord bot + web + misinfo, one shared vLLM). Requires `DISCORD_TOKEN` in `.env`:
 
 ```bash
-docker compose --profile web up -d
-```
-
-**Web server + Discord bot** (requires `DISCORD_TOKEN`):
-
-```bash
-docker compose --profile all up -d
+docker compose up -d
 ```
 
 The UI is available at `http://localhost:8080`. To expose it on the network, open port 8080 in your firewall / security group.
@@ -872,7 +862,7 @@ docker compose logs -f
 **Stop the server:**
 
 ```bash
-docker compose --profile web down   # or --profile all
+docker compose down
 ```
 
 **Update to a new version:**
@@ -880,7 +870,7 @@ docker compose --profile web down   # or --profile all
 ```bash
 git pull                            # or copy in new files
 docker compose build --no-cache
-docker compose --profile web up -d
+docker compose up -d
 ```
 
 The `hf_cache` (model weights) and database volumes are preserved across rebuilds.

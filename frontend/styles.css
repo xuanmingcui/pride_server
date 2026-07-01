@@ -54,6 +54,31 @@ header {
 
 nav { display: flex; gap: 2px; }
 
+/* Partner logos, side by side at the top-right of the header. UCF is a gold
+   vector that sits directly on the dark bar; DSO is a white-background raster,
+   so it gets a small white chip to read cleanly on dark. */
+.brand-logos {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+}
+.brand-logo { display: block; width: auto; }
+.brand-logo--ucf { height: 30px; }
+.brand-logo--dso {
+  height: 26px;
+  background: #fff;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  box-sizing: content-box;
+}
+
+/* Keep the header from overflowing on narrow viewports. */
+@media (max-width: 900px) {
+  .brand-logos { display: none; }
+}
+
 .tab-btn {
   background: none;
   border: none;

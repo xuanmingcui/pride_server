@@ -1,6 +1,6 @@
 """Shared ML services — loaded once and used by both the Discord bot and the web API.
 
-Extracting model initialization here lets run_all.py create one set of model
+Extracting model initialization here lets run.py create one set of model
 instances and hand them to both the Discord bot and the FastAPI server, avoiding
 double-loading the multi-GB GPU models.
 """
