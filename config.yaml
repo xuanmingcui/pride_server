@@ -4,9 +4,15 @@
 
 model:
   name: "Qwen/Qwen3-VL-4B-Instruct-FP8"
-  # Supported vision-language models (set `name` to one of these):
-  #   Qwen/Qwen3-VL-4B-Instruct-FP8   (default)
+  # Supported models (set `name` to one of these):
+  #   Qwen/Qwen3-VL-4B-Instruct-FP8   (default; vision-language)
   #   Qwen/Qwen3.5-4B                 (Qwen3_5ForConditionalGeneration; thinking off by default)
+  #   RedHatAI/Qwen3.5-35B-A3B-FP8-dynamic
+  #       Large MoE (35B total / ~3B active), FP8. Does NOT fit on one GPU — set
+  #       tensor_parallel_size: 2 to shard across both GPUs. If it still OOMs,
+  #       raise gpu_memory_utilization toward 0.95, then set cpu_offload_gb > 0.
+  #       NOTE: this appears to be a TEXT-ONLY model (no vision) — if so also set
+  #       `multimodal: false`; the video scene-graph path needs a *-VL-* model.
   backend: "vllm"           # vllm | transformers
   device: "cuda"            # cuda | cpu | auto
   dtype: "auto"             # auto | fp16 | bf16
@@ -16,8 +22,14 @@ model:
   max_new_tokens: 4096
   temperature: 0.2           # low temp for grounded structured extraction (high temp fabricates
                              # nonsensical / cross-shot triplets, e.g. "aircraft speaks to man")
-  tensor_parallel_size: 1   # increase for multi-GPU (vllm only)
+  tensor_parallel_size: 1   # number of GPUs to shard the model across (vllm). Set 2 for the 35B model.
   max_model_len: 32768      # cap KV cache length; your GPU fits ~41520 max
+  gpu_memory_utilization: 0.90  # fraction of EACH GPU's VRAM vLLM may use (0-1). Raise toward 0.95
+                                # to squeeze a bigger model in; lower if other processes share the GPU.
+  cpu_offload_gb: 0         # GB of model weights to offload to CPU RAM PER GPU (0 = disabled).
+                            # Last resort when a model won't fit even sharded — significantly slower.
+  multimodal: true          # true for vision-language (*-VL-*) models (enables video/image input).
+                            # Set false for text-only models, or vLLM will reject the mm config.
 
 whisper:
   model_size: "large-v3"    # tiny | base | small | medium | large-v3

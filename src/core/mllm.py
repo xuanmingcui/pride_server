@@ -15,10 +15,13 @@ Request dict schema:
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 from PIL import Image
 
 from .triplets import Triplet, extract_triplets_from_text, validate_triplets
+
+log = logging.getLogger("pride.mllm")
 
 _backend_instance: Optional["BaseMLLM"] = None
 
@@ -98,6 +101,9 @@ class VLLMBackend(BaseMLLM):
         tensor_parallel_size: int = 1,
         max_model_len: int = 32768,
         enable_thinking: bool = False,
+        gpu_memory_utilization: float = 0.90,
+        cpu_offload_gb: float = 0.0,
+        multimodal: bool = True,
     ):
         from vllm import LLM, SamplingParams
         from transformers import AutoProcessor
@@ -107,15 +113,33 @@ class VLLMBackend(BaseMLLM):
         self.temperature = temperature
         # Qwen3 / Qwen3.5 "thinking" toggle, forwarded to apply_chat_template.
         self.enable_thinking = enable_thinking
+        self.multimodal = multimodal
         self.SamplingParams = SamplingParams
 
-        self.llm = LLM(
+        # Assemble engine args. tensor_parallel_size>1 shards the model across
+        # that many GPUs; gpu_memory_utilization caps the fraction of each GPU's
+        # VRAM vLLM may claim; cpu_offload_gb spills that many GB of weights PER
+        # GPU to host RAM (last resort when it still won't fit — slow).
+        llm_kwargs: Dict[str, Any] = dict(
             model=model_name,
             tensor_parallel_size=tensor_parallel_size,
             trust_remote_code=True,
-            limit_mm_per_prompt={"video": 1, "image": 16},
             max_model_len=max_model_len,
+            gpu_memory_utilization=gpu_memory_utilization,
         )
+        # Only advertise multimodal input limits for vision models — passing these
+        # to a text-only model makes vLLM reject the config.
+        if multimodal:
+            llm_kwargs["limit_mm_per_prompt"] = {"video": 1, "image": 16}
+        if cpu_offload_gb and cpu_offload_gb > 0:
+            llm_kwargs["cpu_offload_gb"] = float(cpu_offload_gb)
+
+        log.info(
+            "Loading vLLM model %s (tp=%d, gpu_mem_util=%.2f, cpu_offload_gb=%s, multimodal=%s, max_len=%d)",
+            model_name, tensor_parallel_size, gpu_memory_utilization,
+            cpu_offload_gb or 0, multimodal, max_model_len,
+        )
+        self.llm = LLM(**llm_kwargs)
         self.processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 
     _DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
@@ -423,6 +447,9 @@ def get_backend(config: Dict[str, Any]) -> BaseMLLM:
                 **common,
                 tensor_parallel_size=config.get("tensor_parallel_size", 1),
                 max_model_len=config.get("max_model_len", 32768),
+                gpu_memory_utilization=config.get("gpu_memory_utilization", 0.90),
+                cpu_offload_gb=config.get("cpu_offload_gb", 0.0),
+                multimodal=config.get("multimodal", True),
             )
         else:
             # Normalise "cuda" → "cuda:0" so TransformersVLBackend is pinned to
